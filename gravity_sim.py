@@ -3,6 +3,29 @@ import math
 import numpy as np
 import random
 
+# Helper functions for coordinate conversion
+def world_to_screen(world_pos, camera_offset, zoom):
+    """Convert world coordinates to screen coordinates based on camera offset and zoom"""
+    if isinstance(world_pos, tuple) or isinstance(world_pos, list):
+        world_pos = np.array(world_pos, dtype=float)
+    
+    # Adjust for camera offset, then scale by zoom
+    screen_x = int((world_pos[0] - camera_offset[0]) * zoom)
+    screen_y = int((world_pos[1] - camera_offset[1]) * zoom)
+    
+    return (screen_x, screen_y)
+
+def screen_to_world(screen_pos, camera_offset, zoom):
+    """Convert screen coordinates to world coordinates based on camera offset and zoom"""
+    if isinstance(screen_pos, tuple) or isinstance(screen_pos, list):
+        screen_pos = np.array(screen_pos, dtype=float)
+    
+    # First scale by inverse zoom, then adjust for camera offset
+    world_x = screen_pos[0] / zoom + camera_offset[0]
+    world_y = screen_pos[1] / zoom + camera_offset[1]
+    
+    return np.array([world_x, world_y], dtype=float)
+
 # Initialize pygame
 pygame.init()
 
@@ -393,14 +416,17 @@ velocity_edit_mode = False
 velocity_edit_start = None
 running = True
 
-# Camera offset (will be updated to center on star)
+# Camera settings
 camera_offset = np.array([0, 0], dtype=float)
+camera_zoom = 1.0
+camera_dragging = False
+camera_drag_start = None
+
+# Time control
+time_scale = 1.0  # Normal speed
+slow_time = False
 
 while running:
-    # Update camera to center on star
-    target_center = np.array([width/2, height/2], dtype=float)
-    camera_offset = star.position - target_center
-    
     # Handle events
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -414,6 +440,12 @@ while running:
             elif event.key == pygame.K_r:
                 # Reset simulation
                 reset_simulation()
+                # Reset camera settings when simulation resets
+                camera_offset = np.array([0, 0], dtype=float)
+                camera_zoom = 1.0
+                # Reset time scale
+                time_scale = 1.0
+                slow_time = False
                 
             elif event.key == pygame.K_a:
                 # Toggle velocity edit mode for the selected body
@@ -421,73 +453,111 @@ while running:
                     selected_body.velocity_edit_mode = not selected_body.velocity_edit_mode
                     velocity_edit_mode = selected_body.velocity_edit_mode
                     velocity_edit_start = None
+                    
+            elif event.key == pygame.K_l:
+                # Toggle slow time
+                slow_time = not slow_time
+                if slow_time:
+                    time_scale = 0.25  # 25% of normal speed (75% reduction)
+                else:
+                    time_scale = 1.0  # Normal speed
         
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            # Check if in velocity edit mode
-            if velocity_edit_mode and selected_body:
-                # Start velocity edit from clicked position
-                mouse_pos = pygame.mouse.get_pos()
-                # Adjust mouse position by camera offset
-                adjusted_mouse_pos = np.array([mouse_pos[0], mouse_pos[1]], dtype=float) + camera_offset
-                velocity_edit_start = adjusted_mouse_pos
-            else:
-                # Check if a body was clicked
-                mouse_pos = pygame.mouse.get_pos()
-                # Adjust mouse position by camera offset
-                adjusted_mouse_pos = np.array([mouse_pos[0], mouse_pos[1]], dtype=float) + camera_offset
-                
-                for body in bodies:
-                    # Calculate distance to the body using camera-adjusted coordinates
-                    distance = math.sqrt((body.position[0] - adjusted_mouse_pos[0])**2 + 
-                                      (body.position[1] - adjusted_mouse_pos[1])**2)
-                    if distance <= body.radius:
-                        dragging_body = body
-                        selected_body = body
-                        body.being_dragged = True
-                        break
+            # Right mouse button for camera panning
+            if event.button == 3:  # Right click
+                camera_dragging = True
+                camera_drag_start = pygame.mouse.get_pos()
+            # Mouse wheel for zooming
+            elif event.button == 4:  # Scroll up
+                camera_zoom *= 1.1  # Zoom in
+            elif event.button == 5:  # Scroll down
+                camera_zoom *= 0.9  # Zoom out
+                if camera_zoom < 0.1:  # Limit minimum zoom
+                    camera_zoom = 0.1
+            # Left click for body selection and interaction
+            elif event.button == 1:  # Left click
+                # Check if in velocity edit mode
+                if velocity_edit_mode and selected_body:
+                    # Start velocity edit from clicked position
+                    mouse_pos = pygame.mouse.get_pos()
+                    # Convert screen position to world position
+                    world_pos = screen_to_world(mouse_pos, camera_offset, camera_zoom)
+                    velocity_edit_start = world_pos
+                else:
+                    # Check if a body was clicked
+                    mouse_pos = pygame.mouse.get_pos()
+                    # Convert screen position to world position
+                    world_pos = screen_to_world(mouse_pos, camera_offset, camera_zoom)
+                    
+                    for body in bodies:
+                        # Calculate distance to the body
+                        distance = math.sqrt((body.position[0] - world_pos[0])**2 + 
+                                         (body.position[1] - world_pos[1])**2)
+                        if distance <= body.radius:
+                            dragging_body = body
+                            selected_body = body
+                            body.being_dragged = True
+                            break
         
         elif event.type == pygame.MOUSEBUTTONUP:
-            # If in velocity edit mode, set the new velocity
-            if velocity_edit_mode and selected_body and velocity_edit_start is not None:
-                mouse_pos = pygame.mouse.get_pos()
-                # Adjust mouse position by camera offset
-                adjusted_mouse_pos = np.array([mouse_pos[0], mouse_pos[1]], dtype=float) + camera_offset
+            # End camera dragging
+            if event.button == 3:  # Right click
+                camera_dragging = False
+                camera_drag_start = None
+            # End body interaction
+            elif event.button == 1:  # Left click
+                # If in velocity edit mode, set the new velocity
+                if velocity_edit_mode and selected_body and velocity_edit_start is not None:
+                    mouse_pos = pygame.mouse.get_pos()
+                    # Convert screen position to world position
+                    world_pos = screen_to_world(mouse_pos, camera_offset, camera_zoom)
+                    
+                    # Calculate new velocity from the drag vector
+                    new_velocity = (world_pos - selected_body.position) / 2.0
+                    selected_body.velocity = new_velocity
+                    
+                    velocity_edit_start = None
                 
-                # Calculate new velocity from the drag vector
-                new_velocity = (adjusted_mouse_pos - selected_body.position) / 2.0
-                selected_body.velocity = new_velocity
-                
-                velocity_edit_start = None
-            
-            # End dragging
-            if dragging_body:
-                dragging_body.being_dragged = False
-                dragging_body = None
+                # End dragging
+                if dragging_body:
+                    dragging_body.being_dragged = False
+                    dragging_body = None
         
         elif event.type == pygame.MOUSEMOTION:
+            # Camera panning
+            if camera_dragging and camera_drag_start:
+                current_pos = pygame.mouse.get_pos()
+                # Calculate the difference and scale by zoom (since we need to move more when zoomed in)
+                dx = (camera_drag_start[0] - current_pos[0]) / camera_zoom
+                dy = (camera_drag_start[1] - current_pos[1]) / camera_zoom
+                camera_offset += np.array([dx, dy], dtype=float)
+                camera_drag_start = current_pos
             # Preview velocity in edit mode
-            if velocity_edit_mode and selected_body and velocity_edit_start is not None:
+            elif velocity_edit_mode and selected_body and velocity_edit_start is not None:
                 mouse_pos = pygame.mouse.get_pos()
-                # Adjust mouse position by camera offset
-                adjusted_mouse_pos = np.array([mouse_pos[0], mouse_pos[1]], dtype=float) + camera_offset
+                # Convert screen position to world position
+                world_pos = screen_to_world(mouse_pos, camera_offset, camera_zoom)
                 
                 # Preview new velocity
-                new_velocity = (adjusted_mouse_pos - selected_body.position) / 2.0
+                new_velocity = (world_pos - selected_body.position) / 2.0
                 selected_body.velocity = new_velocity
             
-            # Regular dragging
+            # Regular dragging of bodies
             elif dragging_body:
                 # Update body position to mouse position
                 mouse_pos = pygame.mouse.get_pos()
-                # Adjust mouse position by camera offset
-                adjusted_mouse_pos = np.array([mouse_pos[0], mouse_pos[1]], dtype=float) + camera_offset
-                dragging_body.position = adjusted_mouse_pos
+                # Convert screen position to world position
+                world_pos = screen_to_world(mouse_pos, camera_offset, camera_zoom)
+                dragging_body.position = world_pos
                 
                 # When dragging, reset the body's trail
                 dragging_body.trail = []
     
     # Update physics (unless paused)
     if not paused:
+        # Apply time scale to dt
+        effective_dt = dt * time_scale
+        
         # For more accurate simulation, we calculate forces first then apply them
         forces = {}
         for i, body1 in enumerate(bodies):
@@ -501,18 +571,15 @@ while running:
         # Apply forces and update positions
         for body in bodies:
             if body in forces:
-                body.apply_force(forces[body], dt)
-            body.update_position(dt)
+                body.apply_force(forces[body], effective_dt)
+            body.update_position(effective_dt)
     
     # Clear screen
     screen.fill(BLACK)
     
-    # Draw bodies with camera offset
+    # Draw bodies with camera offset and zoom
     for body in bodies:
-        # Calculate position adjusted for camera
-        adjusted_position = body.position - camera_offset
-        
-        # Draw trail with camera offset
+        # Draw trail with camera offset and zoom
         if len(body.trail) > 1:
             for i in range(1, len(body.trail)):
                 # Fade the trail from the body color to black
@@ -523,64 +590,70 @@ while running:
                     int(body.color[2] * alpha)
                 )
                 # Get trail points adjusted for camera
-                point1 = (int(body.trail[i-1][0] - camera_offset[0]), 
-                          int(body.trail[i-1][1] - camera_offset[1]))
-                point2 = (int(body.trail[i][0] - camera_offset[0]), 
-                          int(body.trail[i][1] - camera_offset[1]))
+                point1 = world_to_screen((body.trail[i-1][0], body.trail[i-1][1]), camera_offset, camera_zoom)
+                point2 = world_to_screen((body.trail[i][0], body.trail[i][1]), camera_offset, camera_zoom)
                 pygame.draw.line(screen, trail_color, point1, point2, 2)
         
-        # Draw the body
-        position = (int(adjusted_position[0]), int(adjusted_position[1]))
+        # Calculate position adjusted for camera and zoom
+        screen_pos = world_to_screen(body.position, camera_offset, camera_zoom)
         
+        # Scale the radius by zoom
+        screen_radius = int(body.radius * camera_zoom)
+        
+        # Draw the body
         if body.texture is not None:
-            # Draw the textured planet
-            screen.blit(body.texture, 
-                      (position[0] - body.radius, position[1] - body.radius))
+            # Scale texture based on zoom
+            scaled_size = int(body.radius * 2 * camera_zoom)
+            if scaled_size < 1:  # Ensure minimum size
+                scaled_size = 1
+            
+            scaled_texture = pygame.transform.scale(body.texture, (scaled_size, scaled_size))
+            screen.blit(scaled_texture, 
+                      (screen_pos[0] - scaled_size//2, screen_pos[1] - scaled_size//2))
         else:
             # Draw regular planet
-            pygame.draw.circle(screen, body.color, position, body.radius)
+            pygame.draw.circle(screen, body.color, screen_pos, screen_radius)
         
         # Draw velocity arrow when in velocity edit mode
         if body.velocity_edit_mode:
             # Scale factor to make arrow visible
             scale = 2.0
-            # Calculate arrow end point adjusted for camera
+            # Calculate arrow end point in world space
             arrow_end = body.position + body.velocity * scale
-            arrow_end_adjusted = arrow_end - camera_offset
+            # Convert to screen space
+            arrow_end_screen = world_to_screen(arrow_end, camera_offset, camera_zoom)
             
             # Draw the line
-            pygame.draw.line(screen, WHITE, 
-                           position,
-                           (int(arrow_end_adjusted[0]), int(arrow_end_adjusted[1])), 2)
+            pygame.draw.line(screen, WHITE, screen_pos, arrow_end_screen, 2)
             
             # Draw arrowhead
             if np.linalg.norm(body.velocity) > 0:
                 # Calculate direction
                 direction = body.velocity / np.linalg.norm(body.velocity)
-                # Arrow head size
-                head_size = 10
+                # Arrow head size scaled with zoom
+                head_size = 10 * camera_zoom
                 # Calculate perpendicular vectors
                 perpendicular = np.array([-direction[1], direction[0]])
                 
-                # Calculate arrowhead points
-                point1 = arrow_end - direction * head_size + perpendicular * head_size/2
-                point2 = arrow_end - direction * head_size - perpendicular * head_size/2
+                # Calculate arrowhead points in world space
+                point1 = arrow_end - direction * head_size/camera_zoom + perpendicular * head_size/(2*camera_zoom)
+                point2 = arrow_end - direction * head_size/camera_zoom - perpendicular * head_size/(2*camera_zoom)
                 
-                # Adjust for camera
-                point1_adjusted = point1 - camera_offset
-                point2_adjusted = point2 - camera_offset
+                # Convert to screen space
+                point1_screen = world_to_screen(point1, camera_offset, camera_zoom)
+                point2_screen = world_to_screen(point2, camera_offset, camera_zoom)
                 
                 # Draw arrowhead
                 pygame.draw.polygon(screen, WHITE, [
-                    (int(arrow_end_adjusted[0]), int(arrow_end_adjusted[1])),
-                    (int(point1_adjusted[0]), int(point1_adjusted[1])),
-                    (int(point2_adjusted[0]), int(point2_adjusted[1]))
+                    arrow_end_screen,
+                    point1_screen,
+                    point2_screen
                 ])
             
             # Draw velocity magnitude text
             vel_magnitude = np.linalg.norm(body.velocity)
             vel_text = font.render(f"v={int(vel_magnitude)}", True, WHITE)
-            screen.blit(vel_text, (int(arrow_end_adjusted[0]) + 5, int(arrow_end_adjusted[1]) + 5))
+            screen.blit(vel_text, (arrow_end_screen[0] + 5, arrow_end_screen[1] + 5))
     
     # Display info
     info_text = [
@@ -595,12 +668,16 @@ while running:
         f"Planet Velocity: {int(np.linalg.norm(planet.velocity))}",
         f"Planet2 Velocity: {int(np.linalg.norm(planet2.velocity))}",              
         f"Moon Velocity: {int(np.linalg.norm(moon.velocity))}",
+        f"Camera Zoom: {camera_zoom:.2f}x",
+        f"Time Scale: {time_scale:.2f}x",
         "Space: Pause/Resume",
         "R: Reset",
+        "L: Toggle slow motion",
         "Click & Drag: Move bodies",
+        "Right-click & Drag: Pan camera",
+        "Scroll wheel: Zoom in/out",
         "A: Toggle velocity edit mode (on selected body)",
-        "In velocity mode: Click & drag to set velocity",
-        "Camera: Centered on star"
+        "In velocity mode: Click & drag to set velocity"
     ]
     
     for i, text in enumerate(info_text):
