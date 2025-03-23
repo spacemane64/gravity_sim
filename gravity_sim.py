@@ -299,9 +299,9 @@ def calculate_gravity(body1, body2):
     return force_vector
 
 def reset_simulation():
-    # Planet-star distance - increased to reduce star's influence on moon
-    planet_star_distance = 350  # was 200
-    planet2_star_distance = 150  # Distance for the green planet
+    # Planet-star distance - increased for better realism
+    planet_star_distance = 500  # Increased from 350
+    planet2_star_distance = 250  # Increased from 150
 
     # Moon-planet distance - made smaller to strengthen planet's gravity on moon
     moon_planet_distance = 30   # was 40
@@ -353,12 +353,12 @@ star = Body(
     position=[width/2, height/2],
     velocity=[0, 0],
     color=YELLOW,
-    radius=20
+    radius=35  # Increased from 20 (75% larger)
 )
 
-# Planet-star distance - increased to reduce star's influence on moon
-planet_star_distance = 350  # was 200
-planet2_star_distance = 150  # Distance for the green planet
+# Planet-star distance - increased for better realism
+planet_star_distance = 500  # Increased from 350
+planet2_star_distance = 250  # Increased from 150
 # Moon-planet distance - made smaller to strengthen planet's gravity on moon
 moon_planet_distance = 30   # was 40
 
@@ -369,7 +369,7 @@ planet = Body(
     # Initial velocity for a stable orbit
     velocity=[0, math.sqrt(G * star.mass / planet_star_distance)],
     color=BLUE,
-    radius=12
+    radius=9  # Reduced from 12
 )
 
 # Green planet - closer to the star
@@ -379,7 +379,7 @@ planet2 = Body(
     # Initial velocity for a stable orbit
     velocity=[0, math.sqrt(G * star.mass / planet2_star_distance)],
     color=GREEN,
-    radius=8
+    radius=6  # Reduced from 8
 )
 
 # Small orbiting body (like a moon)
@@ -389,7 +389,7 @@ moon = Body(
     # Initial velocity will be set below
     velocity=[0, 0],
     color=GRAY,
-    radius=5
+    radius=3  # Reduced from 5
 )
 
 bodies = [star, planet, planet2, moon]
@@ -421,12 +421,20 @@ camera_offset = np.array([0, 0], dtype=float)
 camera_zoom = 1.0
 camera_dragging = False
 camera_drag_start = None
+camera_tracking = None  # Which body the camera is tracking
 
 # Time control
 time_scale = 1.0  # Normal speed
 slow_time = False
 
 while running:
+    # Handle camera tracking if enabled
+    if camera_tracking is not None and camera_tracking in bodies:
+        # Get the screen center
+        center = np.array([width/2, height/2], dtype=float)
+        # Calculate needed offset to center the tracking body
+        camera_offset = camera_tracking.position - center / camera_zoom
+    
     # Handle events
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -446,6 +454,8 @@ while running:
                 # Reset time scale
                 time_scale = 1.0
                 slow_time = False
+                # Reset camera tracking
+                camera_tracking = None
                 
             elif event.key == pygame.K_a:
                 # Toggle velocity edit mode for the selected body
@@ -461,12 +471,34 @@ while running:
                     time_scale = 0.25  # 25% of normal speed (75% reduction)
                 else:
                     time_scale = 1.0  # Normal speed
+                    
+            elif event.key == pygame.K_1:
+                # Track blue planet
+                camera_tracking = planet
+                
+            elif event.key == pygame.K_2:
+                # Track sandy planet
+                camera_tracking = planet2
+                
+            elif event.key == pygame.K_3:
+                # Track moon
+                camera_tracking = moon
+                
+            elif event.key == pygame.K_4:
+                # Track sun
+                camera_tracking = star
+                
+            elif event.key == pygame.K_5:
+                # Free camera (no tracking)
+                camera_tracking = None
         
         elif event.type == pygame.MOUSEBUTTONDOWN:
             # Right mouse button for camera panning
             if event.button == 3:  # Right click
                 camera_dragging = True
                 camera_drag_start = pygame.mouse.get_pos()
+                # Disable camera tracking when manually panning
+                camera_tracking = None
             # Mouse wheel for zooming
             elif event.button == 4:  # Scroll up
                 camera_zoom *= 1.1  # Zoom in
@@ -673,6 +705,8 @@ while running:
         "Space: Pause/Resume",
         "R: Reset",
         "L: Toggle slow motion",
+        "1-4: Focus camera on bodies",
+        "5: Free camera",
         "Click & Drag: Move bodies",
         "Right-click & Drag: Pan camera",
         "Scroll wheel: Zoom in/out",
@@ -688,6 +722,18 @@ while running:
     if paused:
         pause_text = font.render("PAUSED", True, RED)
         screen.blit(pause_text, (width - 100, 20))
+    
+    # Display tracking info
+    if camera_tracking is not None:
+        if camera_tracking == star:
+            tracking_text = font.render("Tracking: Star", True, YELLOW)
+        elif camera_tracking == planet:
+            tracking_text = font.render("Tracking: Blue Planet", True, BLUE)
+        elif camera_tracking == planet2:
+            tracking_text = font.render("Tracking: Sandy Planet", True, GREEN)
+        elif camera_tracking == moon:
+            tracking_text = font.render("Tracking: Moon", True, GRAY)
+        screen.blit(tracking_text, (width - 200, 20))
     
     # Update display
     pygame.display.flip()
