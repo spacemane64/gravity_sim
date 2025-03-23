@@ -367,10 +367,11 @@ class PlanetMapGenerator:
     
     def __init__(self, 
                 seed=None, 
-                ocean_level=0.45,  # Increased from 0.35 to create much larger oceans
+                ocean_level=0.45,
                 mountain_level=0.75,
                 width=MAP_WIDTH,
-                height=MAP_HEIGHT):
+                height=MAP_HEIGHT,
+                continent_count=5):  # Added parameter for controlling number of continents
         """
         Initialize the map generator
         
@@ -380,20 +381,29 @@ class PlanetMapGenerator:
             mountain_level: Value above which is considered mountains (0-1)
             width: Width of the map in pixels
             height: Height of the map in pixels
+            continent_count: Number of continental regions to generate
         """
         self.width = width
         self.height = height
         self.seed = seed if seed is not None else random.randint(0, 10000)
         self.ocean_level = ocean_level
         self.mountain_level = mountain_level
+        self.continent_count = continent_count
+        
+        # Set random seed
+        random.seed(self.seed)
         
         # Initialize noise generators
         self.noise_gen = PerlinNoise(seed=self.seed)
         self.moisture_gen = PerlinNoise(seed=self.seed + 1)
         self.temp_gen = PerlinNoise(seed=self.seed + 2)
+        self.continent_shape_gen = PerlinNoise(seed=self.seed + 3)
+        
+        # Generate continent placement data
+        self.continents = self._generate_continent_shapes()
         
         # Set different scales for various terrain features
-        self.continent_scale = 0.6  # Decreased from 1.0 to create larger continent features
+        self.continent_scale = 0.6
         self.mountain_scale = 2.5
         self.detail_scale = 6.0
         self.moisture_scale = 2.8
@@ -414,6 +424,7 @@ class PlanetMapGenerator:
         self.height_surface = None
         self.moisture_surface = None
         self.temp_surface = None
+        self.continent_surface = None  # Added for debugging continent shapes
         
         # Current display mode
         self.current_view = "biome"
@@ -423,6 +434,375 @@ class PlanetMapGenerator:
         
         # Generate all map views
         self._generate_map_views()
+    
+    def _generate_continent_shapes(self):
+        """Generate continent placement and shape data"""
+        continents = []
+        
+        # Generate a full coverage map by first creating a grid of influence zones
+        grid_size = max(2, min(4, self.continent_count // 2))  # Determine grid based on continent count
+        
+        # Calculate number of land vs ocean continents
+        land_continent_count = max(2, int(self.continent_count * 0.7))  # At least 2 land continents
+        ocean_continent_count = self.continent_count - land_continent_count
+        
+        # Create a grid of possible continent centers to ensure better coverage
+        grid_positions = []
+        for i in range(grid_size):
+            for j in range(grid_size):
+                # Convert grid to spherical coordinates (avoid exact uniform grid for more natural look)
+                theta_jitter = random.uniform(-0.1, 0.1)
+                phi_jitter = random.uniform(-0.1, 0.1)
+                
+                theta = (j / grid_size + theta_jitter) * 2 * math.pi  # Longitude with jitter
+                phi = (i / grid_size + phi_jitter) * math.pi          # Latitude with jitter
+                
+                # Only add if not too close to poles (avoid extreme distortion)
+                if 0.1 * math.pi < phi < 0.9 * math.pi:
+                    grid_positions.append((theta, phi))
+        
+        # If we need more positions than the grid provides, add random ones
+        while len(grid_positions) < self.continent_count:
+            theta = random.uniform(0, 2 * math.pi)
+            phi = random.uniform(0.2 * math.pi, 0.8 * math.pi)
+            grid_positions.append((theta, phi))
+        
+        # Shuffle positions for randomness
+        random.shuffle(grid_positions)
+        
+        # 1. Create land continents
+        for i in range(land_continent_count):
+            if len(grid_positions) > 0:
+                theta, phi = grid_positions.pop()
+                
+                # Convert to 3D point on unit sphere
+                x, y, z = self._spherical_to_cartesian(theta, phi)
+                
+                # Generate random shape characteristics for this land continent
+                # Land continents are larger with more elevation
+                base_size = random.uniform(0.18, 0.3)  # Larger size for land continents
+                
+                # Generate irregular shapes with multiple "growth points"
+                growth_points = random.randint(1, 3)  # Number of sub-centers
+                secondary_points = []
+                
+                # Main center is the strongest
+                main_strength = random.uniform(0.6, 0.9)
+                
+                for _ in range(growth_points):
+                    # Create secondary growth points around the main one
+                    angle_offset = random.uniform(0, 2 * math.pi)
+                    dist = random.uniform(0.05, 0.15)  # Close but not too close
+                    
+                    # Calculate offset position (approximate on sphere)
+                    sec_theta = theta + dist * math.cos(angle_offset)
+                    sec_phi = phi + dist * math.sin(angle_offset)
+                    
+                    # Ensure proper wrapping around sphere
+                    while sec_theta > 2 * math.pi:
+                        sec_theta -= 2 * math.pi
+                    while sec_theta < 0:
+                        sec_theta += 2 * math.pi
+                        
+                    # Clamp latitude to valid range
+                    sec_phi = max(0.05 * math.pi, min(0.95 * math.pi, sec_phi))
+                    
+                    # Convert secondary point to cartesian
+                    sx, sy, sz = self._spherical_to_cartesian(sec_theta, sec_phi)
+                    
+                    # Strength of this growth point (relative to main center)
+                    strength = random.uniform(0.3, 0.8)
+                    
+                    secondary_points.append({
+                        'pos': (sx, sy, sz),
+                        'strength': strength,
+                        'size': base_size * random.uniform(0.5, 0.9)
+                    })
+                
+                # Generate unique features for this continent
+                shape_scale = random.uniform(0.9, 1.7)  # Shape detail scale
+                mountain_chance = random.uniform(0.4, 0.9)  # Higher probability for mountains
+                fractal_factor = random.uniform(0.5, 1.0)  # How fractal/irregular the coastline is
+                elevation_offset = random.uniform(0.0, 0.3)  # Positive offset to ensure land
+                
+                # Override noise settings for this specific continent
+                continent_specific_seed = random.randint(0, 10000)
+                
+                continents.append({
+                    'type': 'land',
+                    'center': (x, y, z),  # 3D coordinates on unit sphere
+                    'secondary_points': secondary_points,
+                    'main_strength': main_strength,
+                    'size': base_size,
+                    'shape_scale': shape_scale,
+                    'elevation_offset': elevation_offset,
+                    'mountain_chance': mountain_chance,
+                    'fractal_factor': fractal_factor,
+                    'seed': continent_specific_seed
+                })
+        
+        # 2. Create ocean continents (areas with mostly ocean and small islands)
+        for i in range(ocean_continent_count):
+            if len(grid_positions) > 0:
+                theta, phi = grid_positions.pop()
+                
+                # Convert to 3D point on unit sphere
+                x, y, z = self._spherical_to_cartesian(theta, phi)
+                
+                # Generate random shape characteristics for ocean continent
+                # Ocean continents are larger but with negative elevation offset
+                base_size = random.uniform(0.2, 0.35)  # Larger coverage area
+                
+                # Generate islands within this ocean area
+                island_count = random.randint(2, 8)
+                islands = []
+                
+                for _ in range(island_count):
+                    # Create island positions distributed around the center
+                    angle_offset = random.uniform(0, 2 * math.pi)
+                    dist = random.uniform(0.05, base_size * 0.8)
+                    
+                    # Calculate offset position (approximate on sphere)
+                    isl_theta = theta + dist * math.cos(angle_offset)
+                    isl_phi = phi + dist * math.sin(angle_offset)
+                    
+                    # Ensure proper wrapping
+                    while isl_theta > 2 * math.pi:
+                        isl_theta -= 2 * math.pi
+                    while isl_theta < 0:
+                        isl_theta += 2 * math.pi
+                        
+                    # Clamp latitude to valid range
+                    isl_phi = max(0.05 * math.pi, min(0.95 * math.pi, isl_phi))
+                    
+                    # Convert island point to cartesian
+                    ix, iy, iz = self._spherical_to_cartesian(isl_theta, isl_phi)
+                    
+                    # Island properties
+                    island_size = random.uniform(0.02, 0.08)  # Small islands
+                    island_height = random.uniform(0.05, 0.2)  # Height boost
+                    
+                    islands.append({
+                        'pos': (ix, iy, iz),
+                        'size': island_size,
+                        'height': island_height
+                    })
+                
+                # Ocean basin properties
+                shape_scale = random.uniform(0.8, 1.5)
+                elevation_offset = random.uniform(-0.25, -0.1)  # Negative offset to ensure ocean
+                fractal_factor = random.uniform(0.6, 1.2)  # How varied the ocean floor is
+                
+                # Override noise settings for this specific ocean region
+                ocean_specific_seed = random.randint(0, 10000)
+                
+                continents.append({
+                    'type': 'ocean',
+                    'center': (x, y, z),
+                    'size': base_size,
+                    'islands': islands,
+                    'shape_scale': shape_scale,
+                    'elevation_offset': elevation_offset,
+                    'fractal_factor': fractal_factor,
+                    'seed': ocean_specific_seed
+                })
+        
+        return continents
+    
+    def _noise(self, x, y, z):
+        """Generate terrain height using multiple octaves of Perlin noise and continent shapes"""
+        # Calculate the influence of each continent on this point
+        continent_influence = 0
+        base_elevation = 0
+        max_weight = 0.01  # Small initial value to avoid division by zero
+        
+        for continent in self.continents:
+            # Common properties
+            continent_type = continent.get('type', 'land')  # Default to land for backward compatibility
+            cx, cy, cz = continent['center']
+            size = continent['size']
+            shape_scale = continent['shape_scale']
+            elevation_offset = continent['elevation_offset']
+            fractal_factor = continent.get('fractal_factor', 0.8)  # Default if not specified
+            continent_seed = continent['seed']
+            
+            # Calculate base distance to continent center
+            dot_product = x*cx + y*cy + z*cz
+            angle = math.acos(max(-1, min(1, dot_product)))  # Clamp to avoid numerical errors
+            
+            # Base influence is a sigmoid centered at the continent boundary
+            # Clamp the exponent to avoid overflow
+            exponent = min(20, max(-20, (angle / size - 1.0) * 10))
+            distance_factor = 1.0 / (1.0 + math.exp(exponent))
+            
+            # For land continents, consider secondary growth points
+            if continent_type == 'land' and 'secondary_points' in continent:
+                secondary_points = continent['secondary_points']
+                main_strength = continent.get('main_strength', 0.7)
+                
+                # Calculate influence from each secondary point
+                secondary_influence = 0
+                for point in secondary_points:
+                    sx, sy, sz = point['pos']
+                    sec_size = point['size']
+                    strength = point['strength']
+                    
+                    # Calculate distance to this secondary point
+                    sec_dot = x*sx + y*sy + z*sz
+                    sec_angle = math.acos(max(-1, min(1, sec_dot)))
+                    
+                    # Calculate influence from this secondary point with clamped exponent
+                    sec_exponent = min(20, max(-20, (sec_angle / sec_size - 1.0) * 10))
+                    sec_factor = 1.0 / (1.0 + math.exp(sec_exponent))
+                    secondary_influence += sec_factor * strength
+                
+                # Combine main center influence with secondary points
+                # This creates more irregular, realistic continent shapes
+                combined_factor = (distance_factor * main_strength + 
+                                   secondary_influence * (1 - main_strength))
+                
+                distance_factor = combined_factor
+            
+            # For ocean continents, add islands if any
+            if continent_type == 'ocean' and 'islands' in continent:
+                island_influence = 0
+                islands = continent['islands']
+                
+                for island in islands:
+                    ix, iy, iz = island['pos']
+                    island_size = max(0.01, island['size'])  # Ensure non-zero size
+                    island_height = island['height']
+                    
+                    # Calculate distance to island center
+                    isl_dot = x*ix + y*iy + z*iz
+                    isl_angle = math.acos(max(-1, min(1, isl_dot)))
+                    
+                    # Islands have a sharper falloff (steeper islands) with clamped exponent
+                    isl_exponent = min(20, max(-20, (isl_angle / island_size - 1.0) * 15))
+                    isl_factor = 1.0 / (1.0 + math.exp(isl_exponent))
+                    
+                    # Add this island's influence, scaled by its height
+                    island_influence = max(island_influence, isl_factor * island_height)
+                
+                # In ocean regions, islands override the base ocean depression
+                if island_influence > 0.1:
+                    distance_factor = island_influence
+                    # Override elevation offset for islands
+                    elevation_offset = 0.1
+            
+            if distance_factor > 0.01:  # Only process if this continent has meaningful influence
+                # Use continent-specific noise for this region
+                continent_noise_gen = PerlinNoise(seed=continent_seed)
+                
+                # Generate continent-specific noise
+                local_scale = shape_scale * self.continent_scale
+                
+                # Primary continent shape (larger scale)
+                shape_noise = (continent_noise_gen.noise(
+                    x * local_scale * 0.5, 
+                    y * local_scale * 0.5, 
+                    z * local_scale * 0.5
+                ) + 1) / 2
+                
+                # Medium detail (medium scale)
+                medium_noise = (continent_noise_gen.noise(
+                    x * local_scale * 1.5, 
+                    y * local_scale * 1.5, 
+                    z * local_scale * 1.5
+                ) + 1) / 2
+                
+                # Fine detail (smaller scale)
+                detail_noise = (continent_noise_gen.noise(
+                    x * local_scale * 3, 
+                    y * local_scale * 3, 
+                    z * local_scale * 3
+                ) + 1) / 2
+                
+                # Coastal detail (highest frequency)
+                coast_noise = (continent_noise_gen.noise(
+                    x * local_scale * 6, 
+                    y * local_scale * 6, 
+                    z * local_scale * 6
+                ) + 1) / 2
+                
+                # Generate fractal noise with multiple octaves
+                # Adjust weights based on fractal_factor - higher values make more irregular shapes
+                continent_height = (
+                    shape_noise * (0.5 - fractal_factor * 0.2) +
+                    medium_noise * (0.25 + fractal_factor * 0.1) +
+                    detail_noise * (0.15 + fractal_factor * 0.05) +
+                    coast_noise * (0.1 + fractal_factor * 0.05)
+                )
+                
+                # Add elevation offset based on continent type
+                continent_height += elevation_offset
+                
+                # For land continents, add mountains if applicable
+                if continent_type == 'land':
+                    mountain_chance = continent.get('mountain_chance', 0.5)
+                    
+                    # Mountain noise at medium frequency
+                    mountain_noise = (continent_noise_gen.noise(
+                        x * local_scale * 2 + 7.7,  # Offset to make different pattern 
+                        y * local_scale * 2 + 7.7,
+                        z * local_scale * 2 + 7.7
+                    ) + 1) / 2
+                    
+                    # Ridge noise for sharper mountain ranges
+                    ridge_noise = (continent_noise_gen.noise(
+                        x * local_scale * 4 + 13.5,  # Different offset
+                        y * local_scale * 4 + 13.5,
+                        z * local_scale * 4 + 13.5
+                    ) + 1) / 2
+                    
+                    # Enhance ridgelines by taking absolute value and squaring
+                    ridge_noise = 1 - abs(ridge_noise * 2 - 1) 
+                    ridge_noise = ridge_noise * ridge_noise  # Square to enhance peaks
+                    
+                    # Combine different mountain noises
+                    has_mountains = random.random() < mountain_chance
+                    if has_mountains:
+                        mountain_factor = mountain_noise * 0.3 + ridge_noise * 0.2
+                        
+                        # Apply mountains only to land (where base height is higher)
+                        if continent_height > self.ocean_level - 0.05:
+                            continent_height += mountain_factor
+                
+                # Apply the height using the distance factor as weight
+                base_elevation += continent_height * distance_factor
+                max_weight += distance_factor
+        
+        # Normalize the height by the total influence
+        if max_weight > 0.01:  # If we had any meaningful continent influence
+            base_elevation /= max_weight
+            
+            # Apply some global noise to add variety
+            detail = (self.noise_gen.noise(
+                x * self.detail_scale, 
+                y * self.detail_scale, 
+                z * self.detail_scale
+            ) + 1) / 2 * 0.1  # Reduced from 0.15 to make continent shapes more dominant
+            
+            # Combine the continent elevation with some global detail
+            value = base_elevation * 0.9 + detail
+            
+            # Enhance continent vs ocean contrast
+            # Apply sigmoid function to create more defined land/water boundaries
+            sigmoid_input = min(20, max(-20, (value - 0.5) * 12))  # Clamp to avoid overflow
+            sigmoid = 1.0 / (1.0 + math.exp(-sigmoid_input))
+            value = value * 0.8 + sigmoid * 0.2
+        else:
+            # Deep ocean areas with minimal continent influence
+            ocean_noise = (self.noise_gen.noise(
+                x * self.detail_scale * 0.5, 
+                y * self.detail_scale * 0.5, 
+                z * self.detail_scale * 0.5
+            ) + 1) / 2
+            
+            value = ocean_noise * 0.25  # Slightly increased to make ocean floor more varied
+        
+        # Ensure value is in [0,1] range
+        return max(0, min(1, value))
     
     def _define_biomes(self):
         """Define the different biomes based on height, moisture, and temperature"""
@@ -478,33 +858,6 @@ class PlanetMapGenerator:
             return self.biomes[5]  # Grassland
         else:
             return self.biomes[13]  # Mountains
-    
-    def _noise(self, x, y, z):
-        """Generate terrain height using multiple octaves of Perlin noise"""
-        # Multiple octaves at different frequencies for more natural terrain
-        continent = self.noise_gen.noise(x * self.continent_scale, 
-                                        y * self.continent_scale, 
-                                        z * self.continent_scale)
-        
-        # Enhance continent formation by applying a threshold
-        # This creates more defined continent edges rather than gradual slopes
-        continent_threshold = 0.1  # Controls how "binary" the continent vs ocean division is
-        continent = (continent + 1) / 2  # Normalize to [0, 1]
-        continent = max(0, min(1, (continent - 0.5 + continent_threshold) / (continent_threshold * 2)))
-        
-        mountains = self.noise_gen.noise(x * self.mountain_scale, 
-                                        y * self.mountain_scale, 
-                                        z * self.mountain_scale) * 0.5
-        
-        detail = self.noise_gen.noise(x * self.detail_scale, 
-                                     y * self.detail_scale, 
-                                     z * self.detail_scale) * 0.25
-        
-        # Combine octaves
-        value = continent * 0.7 + mountains * 0.2 + detail * 0.1
-        
-        # Normalize to [0, 1]
-        return value
     
     def _spherical_to_cartesian(self, theta, phi):
         """Convert spherical coordinates to cartesian
@@ -609,10 +962,71 @@ class PlanetMapGenerator:
         pygame_surface_array = pygame.surfarray.pixels3d(self.temp_surface)
         pygame_surface_array[:] = temp_temp_array
         del pygame_surface_array
+        
+        # Generate a continent visualization surface
+        self.continent_surface = pygame.Surface((self.width, self.height))
+        continent_array = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        
+        # Generate a random color for each continent for visualization
+        continent_colors = [(random.randint(50, 250), random.randint(50, 250), random.randint(50, 250)) 
+                            for _ in range(len(self.continents))]
+        
+        for y in range(self.height):
+            for x in range(self.width):
+                # Convert pixel coordinates to spherical coordinates
+                theta = (x / self.width) * 2 * math.pi  # Longitude (0 to 2π)
+                phi = (y / self.height) * math.pi       # Latitude (0 to π)
+                
+                # Convert to cartesian coordinates on unit sphere
+                px, py, pz = self._spherical_to_cartesian(theta, phi)
+                
+                # Get height value for ocean masking
+                h = self.height_map[y, x]
+                
+                if h < self.ocean_level:
+                    # Use blue gradient for oceans
+                    depth = h / self.ocean_level
+                    color = (0, 0, int(100 + 155 * depth))
+                else:
+                    # Find the continent with strongest influence on this point
+                    max_influence = 0
+                    continent_idx = -1
+                    
+                    for i, continent in enumerate(self.continents):
+                        cx, cy, cz = continent['center']
+                        size = continent['size']
+                        
+                        # Calculate distance (angle) to continent center
+                        dot_product = px*cx + py*cy + pz*cz
+                        angle = math.acos(max(-1, min(1, dot_product)))
+                        
+                        # Calculate influence factor
+                        influence = 1.0 / (1.0 + math.exp((angle / size - 1.0) * 10))
+                        
+                        if influence > max_influence:
+                            max_influence = influence
+                            continent_idx = i
+                    
+                    if continent_idx >= 0 and max_influence > 0.2:
+                        # Use the continent's color
+                        color = continent_colors[continent_idx]
+                    else:
+                        # Low influence areas (could be smaller islands or coastal areas)
+                        # Use a gray color
+                        gray = int(150 + 105 * h)
+                        color = (gray, gray, gray)
+                
+                continent_array[y, x] = color
+        
+        # Apply continent visualization to surface
+        temp_continent_array = np.transpose(continent_array, (1, 0, 2))
+        pygame_surface_array = pygame.surfarray.pixels3d(self.continent_surface)
+        pygame_surface_array[:] = temp_continent_array
+        del pygame_surface_array
     
     def set_view(self, view_type):
         """Set the current map view"""
-        if view_type in ["biome", "height", "moisture", "temperature"]:
+        if view_type in ["biome", "height", "moisture", "temperature", "continent"]:
             self.current_view = view_type
             return True
         return False
@@ -628,6 +1042,8 @@ class PlanetMapGenerator:
             surface = self.moisture_surface
         elif self.current_view == "temperature":
             surface = self.temp_surface
+        elif self.current_view == "continent":
+            surface = self.continent_surface  # New continent view
         else:
             surface = self.biome_surface
         
@@ -712,9 +1128,9 @@ class PlanetMapGenerator:
     def save_map_image(self, filename=None):
         """Save the map as an image file"""
         if filename is None:
-            # Generate a filename based on seed and timestamp
+            # Generate a filename based on seed, continent count, and timestamp
             timestamp = int(time.time())
-            filename = f"planet_map_seed{self.seed}_{timestamp}.png"
+            filename = f"planet_map_seed{self.seed}_continents{self.continent_count}_{timestamp}.png"
         
         # Ensure the filename has a proper extension
         if not filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
@@ -729,6 +1145,8 @@ class PlanetMapGenerator:
             surface = self.moisture_surface
         elif self.current_view == "temperature":
             surface = self.temp_surface
+        elif self.current_view == "continent":
+            surface = self.continent_surface
         else:
             surface = self.biome_surface
             
@@ -744,6 +1162,7 @@ class PlanetMapGenerator:
         self.noise_gen = PerlinNoise(seed=self.seed)
         self.moisture_gen = PerlinNoise(seed=self.seed + 1)
         self.temp_gen = PerlinNoise(seed=self.seed + 2)
+        self.continent_shape_gen = PerlinNoise(seed=self.seed + 3)
         
         # Generate new map
         self.generate_map()
@@ -1075,6 +1494,13 @@ def main():
         font_size=11  # Reduced from 18
     )
     
+    # Add continent view button
+    btn_continent = Button(
+        rect=(view_button_x, 100 + (view_button_height + 15) * 4, view_button_width, view_button_height),
+        text="Continent View",
+        font_size=11
+    )
+    
     # Add seed input and button
     seed_label = UIElement(
         rect=(650, SCREEN_HEIGHT - 100, 100, 30),
@@ -1091,6 +1517,22 @@ def main():
         max_length=10
     )
     
+    # Add continent count input
+    continent_label = UIElement(
+        rect=(view_button_x, 100 + (view_button_height + 15) * 5 + 20, 100, 30),
+        text="Continents:",
+        font_size=11,
+        bg_color=COLOR_BACKGROUND,
+        border_color=COLOR_BACKGROUND
+    )
+    
+    continent_input = TextInput(
+        rect=(view_button_x, 100 + (view_button_height + 15) * 5 + 50, 160, 40),
+        placeholder="3-8",
+        font_size=11,
+        max_length=2
+    )
+    
     btn_set_seed = Button(
         rect=(840, SCREEN_HEIGHT - 70, 140, 50),
         text="Set Seed",
@@ -1103,11 +1545,14 @@ def main():
         font_size=11  # Reduced from 18
     )
     
-    # Create map generator
-    map_generator = PlanetMapGenerator()
+    # Create map generator with default 5 continents
+    map_generator = PlanetMapGenerator(continent_count=5)
     
     # Update seed input with current seed
     seed_input.set_text(str(map_generator.seed))
+    
+    # Update continent count input with current value
+    continent_input.set_text(str(map_generator.continent_count))
     
     # Create the biome legend in the bottom left - now draggable
     legend = BiomeLegend(
@@ -1118,10 +1563,28 @@ def main():
     
     # Set button actions
     def generate_new_map():
-        new_seed = map_generator.generate_new_map()
-        seed_input.set_text(str(new_seed))
-        print(f"Generated new map with seed: {new_seed}")
-        return new_seed
+        # Get continent count from input
+        continent_count = 5  # Default
+        try:
+            input_value = int(continent_input.get_text())
+            if 2 <= input_value <= 15:  # Reasonable range
+                continent_count = input_value
+            else:
+                print(f"Using default continent count (5) instead of {input_value}")
+        except (ValueError, TypeError):
+            pass  # Use default
+            
+        # Create a new generator with the specified continent count
+        new_generator = PlanetMapGenerator(continent_count=continent_count)
+        
+        # Update the legend with new biomes
+        legend.biomes = new_generator.biomes
+        
+        # Return the seed for display
+        seed_input.set_text(str(new_generator.seed))
+        print(f"Generated new map with seed: {new_generator.seed} and {continent_count} continents")
+        
+        return new_generator, new_generator.seed
     
     def save_map():
         filename = map_generator.save_map_image()
@@ -1148,19 +1611,54 @@ def main():
         map_generator.set_view("temperature")
         return "temperature"
     
+    def set_continent_view():
+        map_generator.set_view("continent")
+        return "continent"
+    
     def set_seed():
         seed_text = seed_input.get_text()
         try:
             # Try to convert the seed to an integer
             seed = int(seed_text)
-            new_seed = map_generator.generate_new_map(seed)
-            print(f"Set seed to: {new_seed}")
-            return new_seed
+            
+            # Get continent count from input
+            continent_count = 5  # Default
+            try:
+                input_value = int(continent_input.get_text())
+                if 2 <= input_value <= 15:  # Reasonable range
+                    continent_count = input_value
+                else:
+                    print(f"Using default continent count (5) instead of {input_value}")
+            except (ValueError, TypeError):
+                pass  # Use default
+                
+            # Create a new generator with the specified seed and continent count
+            new_generator = PlanetMapGenerator(seed=seed, continent_count=continent_count)
+            
+            # Update the legend with new biomes
+            legend.biomes = new_generator.biomes
+            
+            print(f"Set seed to: {new_generator.seed} with {continent_count} continents")
+            return new_generator, new_generator.seed
         except ValueError:
             print(f"Invalid seed: {seed_text}. Using random seed instead.")
-            new_seed = map_generator.generate_new_map()
-            seed_input.set_text(str(new_seed))
-            return new_seed
+            
+            # Still respect continent count
+            continent_count = 5  # Default
+            try:
+                input_value = int(continent_input.get_text())
+                if 2 <= input_value <= 15:
+                    continent_count = input_value
+            except (ValueError, TypeError):
+                pass
+                
+            new_generator = PlanetMapGenerator(continent_count=continent_count)
+            
+            # Update the legend with new biomes
+            legend.biomes = new_generator.biomes
+            
+            seed_input.set_text(str(new_generator.seed))
+            return new_generator, new_generator.seed
     
     btn_generate.action = generate_new_map
     btn_save.action = save_map
@@ -1169,6 +1667,7 @@ def main():
     btn_height.action = set_height_view
     btn_moisture.action = set_moisture_view
     btn_temp.action = set_temp_view
+    btn_continent.action = set_continent_view
     btn_set_seed.action = set_seed
     
     # Main loop
@@ -1177,6 +1676,7 @@ def main():
     # Set initial info panel
     info_panel.set_text([
         f"Seed: {map_generator.seed}",
+        f"Continents: {map_generator.continent_count}",
         "Controls:",
         "- Generate New Map: Create a new map",
         "- Save Map Image: Save map as PNG",
@@ -1193,10 +1693,12 @@ def main():
     # Print instructions
     print("Procedural Planet Map Generator")
     print(f"Initial seed: {map_generator.seed}")
+    print(f"Initial continents: {map_generator.continent_count}")
     print("Controls:")
     print("  - Click 'Generate New Map' for a new random planet")
     print("  - Click 'Save Map Image' to save the current map as PNG")
     print("  - Enter a seed number and click 'Set Seed' to use a specific seed")
+    print("  - Set the number of continents (2-15)")
     print("  - Use the view buttons to switch between different map displays")
     print("  - You can drag and resize panels by their corners")
     
@@ -1229,13 +1731,18 @@ def main():
             
             # Handle text input events
             seed_input.handle_event(event)
+            continent_input.handle_event(event)
             
             # Handle button events
             if event.type == pygame.MOUSEBUTTONDOWN:
                 result = btn_generate.handle_event(event)
                 if result:
+                    # Unpack the return value
+                    map_generator, seed = result
+                    
                     info_panel.set_text([
-                        f"Seed: {result}",
+                        f"Seed: {seed}",
+                        f"Continents: {map_generator.continent_count}",
                         "Controls:",
                         "- Generate New Map: Create a new map",
                         "- Save Map Image: Save map as PNG",
@@ -1253,6 +1760,7 @@ def main():
                 if filename:
                     info_panel.set_text([
                         f"Seed: {map_generator.seed}",
+                        f"Continents: {map_generator.continent_count}",
                         f"Saved map as: {filename}",
                         "",
                         "Controls:",
@@ -1270,6 +1778,7 @@ def main():
                 if legend_state:
                     info_panel.set_text([
                         f"Seed: {map_generator.seed}",
+                        f"Continents: {map_generator.continent_count}",
                         f"Legend {legend_state}",
                         "",
                         "Controls:",
@@ -1286,8 +1795,12 @@ def main():
                 # Handle seed setting
                 result = btn_set_seed.handle_event(event)
                 if result:
+                    # Unpack the return value
+                    map_generator, seed = result
+                    
                     info_panel.set_text([
-                        f"Seed: {result}",
+                        f"Seed: {seed}",
+                        f"Continents: {map_generator.continent_count}",
                         "Set custom seed",
                         "",
                         "Controls:",
@@ -1311,10 +1824,13 @@ def main():
                     view = "Moisture"
                 elif btn_temp.handle_event(event):
                     view = "Temperature"
+                elif btn_continent.handle_event(event):
+                    view = "Continent"
                 
                 if view:
                     info_panel.set_text([
                         f"Seed: {map_generator.seed}",
+                        f"Continents: {map_generator.continent_count}",
                         f"Switched to {view} view",
                         "",
                         "Controls:",
@@ -1330,6 +1846,7 @@ def main():
         
         # Update text input cursor
         seed_input.update(current_time)
+        continent_input.update(current_time)
         
         # Clear screen
         screen.fill(COLOR_BACKGROUND)
@@ -1345,8 +1862,11 @@ def main():
         btn_height.draw(screen)
         btn_moisture.draw(screen)
         btn_temp.draw(screen)
+        btn_continent.draw(screen)
         seed_label.draw(screen)
         seed_input.draw(screen)
+        continent_label.draw(screen)
+        continent_input.draw(screen)
         btn_set_seed.draw(screen)
         
         # Draw title
