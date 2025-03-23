@@ -369,7 +369,7 @@ planet = Body(
     # Initial velocity for a stable orbit
     velocity=[0, math.sqrt(G * star.mass / planet_star_distance)],
     color=BLUE,
-    radius=9  # Reduced from 12
+    radius=7  # Updated from 9 to 7
 )
 
 # Green planet - closer to the star
@@ -379,7 +379,7 @@ planet2 = Body(
     # Initial velocity for a stable orbit
     velocity=[0, math.sqrt(G * star.mass / planet2_star_distance)],
     color=GREEN,
-    radius=6  # Reduced from 8
+    radius=4  # Updated from 6 to 4
 )
 
 # Small orbiting body (like a moon)
@@ -389,7 +389,7 @@ moon = Body(
     # Initial velocity will be set below
     velocity=[0, 0],
     color=GRAY,
-    radius=3  # Reduced from 5
+    radius=2  # Updated from 3 to 2
 )
 
 bodies = [star, planet, planet2, moon]
