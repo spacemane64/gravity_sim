@@ -32,6 +32,7 @@ class Body:
         self.trail = []
         self.max_trail_length = 100
         self.being_dragged = False
+        self.velocity_edit_mode = False
         
     def update_position(self, dt):
         if not self.being_dragged:
@@ -59,6 +60,42 @@ class Body:
         pygame.draw.circle(surface, self.color, 
                            (int(self.position[0]), int(self.position[1])), 
                            self.radius)
+        
+        # Draw velocity arrow when in velocity edit mode
+        if self.velocity_edit_mode:
+            # Scale factor to make arrow visible
+            scale = 2.0
+            arrow_end = self.position + self.velocity * scale
+            
+            # Draw the line
+            pygame.draw.line(surface, WHITE, 
+                            (int(self.position[0]), int(self.position[1])),
+                            (int(arrow_end[0]), int(arrow_end[1])), 2)
+            
+            # Draw arrowhead
+            if np.linalg.norm(self.velocity) > 0:
+                # Calculate direction
+                direction = self.velocity / np.linalg.norm(self.velocity)
+                # Arrow head size
+                head_size = 10
+                # Calculate perpendicular vectors
+                perpendicular = np.array([-direction[1], direction[0]])
+                
+                # Calculate arrowhead points
+                point1 = arrow_end - direction * head_size + perpendicular * head_size/2
+                point2 = arrow_end - direction * head_size - perpendicular * head_size/2
+                
+                # Draw arrowhead
+                pygame.draw.polygon(surface, WHITE, [
+                    (int(arrow_end[0]), int(arrow_end[1])),
+                    (int(point1[0]), int(point1[1])),
+                    (int(point2[0]), int(point2[1]))
+                ])
+            
+            # Draw velocity magnitude text
+            vel_magnitude = np.linalg.norm(self.velocity)
+            vel_text = font.render(f"v={int(vel_magnitude)}", True, WHITE)
+            surface.blit(vel_text, (int(arrow_end[0]) + 5, int(arrow_end[1]) + 5))
         
     def apply_force(self, force, dt):
         if not self.being_dragged:
@@ -91,7 +128,7 @@ def calculate_gravity(body1, body2):
 def reset_simulation():
     # Planet-star distance - increased to reduce star's influence on moon
     planet_star_distance = 350  # was 200
-    planet2_star_distance = 100  # was 200
+    planet2_star_distance = 150  # Distance for the green planet
 
     # Moon-planet distance - made smaller to strengthen planet's gravity on moon
     moon_planet_distance = 30   # was 40
@@ -109,7 +146,10 @@ def reset_simulation():
     planet.velocity = np.array([0, planet_velocity_magnitude], dtype=float)
     planet.trail = []
 
-        # Calculate planet's velocity for stable orbit given the new distance
+    # Reset planet2 (green planet) - closer to the star
+    planet2.position = np.array([width/2 + planet2_star_distance, height/2], dtype=float)
+    
+    # Calculate planet2's velocity for stable orbit
     planet2_velocity_magnitude = math.sqrt(G * star.mass / planet2_star_distance)
     planet2.velocity = np.array([0, planet2_velocity_magnitude], dtype=float)
     planet2.trail = []
@@ -139,7 +179,7 @@ star = Body(
 
 # Planet-star distance - increased to reduce star's influence on moon
 planet_star_distance = 350  # was 200
-planet2_star_distance = 75  # was 200
+planet2_star_distance = 150  # Distance for the green planet
 # Moon-planet distance - made smaller to strengthen planet's gravity on moon
 moon_planet_distance = 30   # was 40
 
@@ -153,9 +193,10 @@ planet = Body(
     radius=12
 )
 
+# Green planet - closer to the star
 planet2 = Body(
-    mass=80,  # Increased mass to have stronger influence on moon
-    position=[width/2 + planet_star_distance/3, height/2],
+    mass=40,  # Smaller mass than blue planet
+    position=[width/2 + planet2_star_distance, height/2],
     # Initial velocity for a stable orbit
     velocity=[0, math.sqrt(G * star.mass / planet2_star_distance)],
     color=GREEN,
@@ -191,6 +232,9 @@ font = pygame.font.SysFont('Arial', 16)
 clock = pygame.time.Clock()
 paused = False
 dragging_body = None
+selected_body = None
+velocity_edit_mode = False
+velocity_edit_start = None
 running = True
 
 while running:
@@ -207,26 +251,62 @@ while running:
             elif event.key == pygame.K_r:
                 # Reset simulation
                 reset_simulation()
+                
+            elif event.key == pygame.K_a:
+                # Toggle velocity edit mode for the selected body
+                if selected_body:
+                    selected_body.velocity_edit_mode = not selected_body.velocity_edit_mode
+                    velocity_edit_mode = selected_body.velocity_edit_mode
+                    velocity_edit_start = None
         
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            # Check if a body was clicked
-            mouse_pos = pygame.mouse.get_pos()
-            for body in bodies:
-                # Calculate distance to the body
-                distance = math.sqrt((body.position[0] - mouse_pos[0])**2 + 
-                                   (body.position[1] - mouse_pos[1])**2)
-                if distance <= body.radius:
-                    dragging_body = body
-                    body.being_dragged = True
-                    break
+            # Check if in velocity edit mode
+            if velocity_edit_mode and selected_body:
+                # Start velocity edit from clicked position
+                mouse_pos = pygame.mouse.get_pos()
+                velocity_edit_start = np.array([mouse_pos[0], mouse_pos[1]], dtype=float)
+            else:
+                # Check if a body was clicked
+                mouse_pos = pygame.mouse.get_pos()
+                for body in bodies:
+                    # Calculate distance to the body
+                    distance = math.sqrt((body.position[0] - mouse_pos[0])**2 + 
+                                      (body.position[1] - mouse_pos[1])**2)
+                    if distance <= body.radius:
+                        dragging_body = body
+                        selected_body = body
+                        body.being_dragged = True
+                        break
         
         elif event.type == pygame.MOUSEBUTTONUP:
+            # If in velocity edit mode, set the new velocity
+            if velocity_edit_mode and selected_body and velocity_edit_start is not None:
+                mouse_pos = pygame.mouse.get_pos()
+                mouse_vec = np.array([mouse_pos[0], mouse_pos[1]], dtype=float)
+                
+                # Calculate new velocity from the drag vector
+                new_velocity = (mouse_vec - selected_body.position) / 2.0
+                selected_body.velocity = new_velocity
+                
+                velocity_edit_start = None
+            
+            # End dragging
             if dragging_body:
                 dragging_body.being_dragged = False
                 dragging_body = None
         
         elif event.type == pygame.MOUSEMOTION:
-            if dragging_body:
+            # Preview velocity in edit mode
+            if velocity_edit_mode and selected_body and velocity_edit_start is not None:
+                mouse_pos = pygame.mouse.get_pos()
+                mouse_vec = np.array([mouse_pos[0], mouse_pos[1]], dtype=float)
+                
+                # Preview new velocity
+                new_velocity = (mouse_vec - selected_body.position) / 2.0
+                selected_body.velocity = new_velocity
+            
+            # Regular dragging
+            elif dragging_body:
                 # Update body position to mouse position
                 mouse_pos = pygame.mouse.get_pos()
                 dragging_body.position = np.array([mouse_pos[0], mouse_pos[1]], dtype=float)
@@ -274,7 +354,9 @@ while running:
         f"Moon Velocity: {int(np.linalg.norm(moon.velocity))}",
         "Space: Pause/Resume",
         "R: Reset",
-        "Click & Drag: Move bodies"
+        "Click & Drag: Move bodies",
+        "A: Toggle velocity edit mode (on selected body)",
+        "In velocity mode: Click & drag to set velocity"
     ]
     
     for i, text in enumerate(info_text):
