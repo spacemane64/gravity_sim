@@ -17,7 +17,7 @@ YELLOW = (255, 255, 0)
 BLUE = (0, 100, 255)
 GRAY = (180, 180, 180)
 RED = (255, 0, 0)
-
+GREEN = (0, 255, 0)
 # Physical constants (scaled for visualization)
 G = 1000  # Gravitational constant (scaled up for better visualization)
 
@@ -91,7 +91,8 @@ def calculate_gravity(body1, body2):
 def reset_simulation():
     # Planet-star distance - increased to reduce star's influence on moon
     planet_star_distance = 350  # was 200
-    
+    planet2_star_distance = 100  # was 200
+
     # Moon-planet distance - made smaller to strengthen planet's gravity on moon
     moon_planet_distance = 30   # was 40
     
@@ -107,6 +108,11 @@ def reset_simulation():
     planet_velocity_magnitude = math.sqrt(G * star.mass / planet_star_distance)
     planet.velocity = np.array([0, planet_velocity_magnitude], dtype=float)
     planet.trail = []
+
+        # Calculate planet's velocity for stable orbit given the new distance
+    planet2_velocity_magnitude = math.sqrt(G * star.mass / planet2_star_distance)
+    planet2.velocity = np.array([0, planet2_velocity_magnitude], dtype=float)
+    planet2.trail = []
     
     # Reset moon - positioned closer to planet
     # Position the moon relative to the planet
@@ -133,7 +139,7 @@ star = Body(
 
 # Planet-star distance - increased to reduce star's influence on moon
 planet_star_distance = 350  # was 200
-
+planet2_star_distance = 75  # was 200
 # Moon-planet distance - made smaller to strengthen planet's gravity on moon
 moon_planet_distance = 30   # was 40
 
@@ -147,6 +153,15 @@ planet = Body(
     radius=12
 )
 
+planet2 = Body(
+    mass=80,  # Increased mass to have stronger influence on moon
+    position=[width/2 + planet_star_distance/3, height/2],
+    # Initial velocity for a stable orbit
+    velocity=[0, math.sqrt(G * star.mass / planet2_star_distance)],
+    color=GREEN,
+    radius=8
+)
+
 # Small orbiting body (like a moon)
 moon = Body(
     mass=1,
@@ -157,7 +172,7 @@ moon = Body(
     radius=5
 )
 
-bodies = [star, planet, moon]
+bodies = [star, planet, planet2, moon]
 
 # Set initial moon velocity
 # Calculate orbital velocity for the moon around the planet
@@ -249,10 +264,13 @@ while running:
         f"Bodies: {len(bodies)}",
         f"Star Mass: {star.mass}",
         f"Planet Mass: {planet.mass}",
+        f"Planet2 Mass: {planet2.mass}",
         f"Moon Mass: {moon.mass}",
         f"Planet-Star Distance: {int(np.linalg.norm(planet.position - star.position))}",
+        f"Planet2-Star Distance: {int(np.linalg.norm(planet2.position - star.position))}",
         f"Moon-Planet Distance: {int(np.linalg.norm(moon.position - planet.position))}",
         f"Planet Velocity: {int(np.linalg.norm(planet.velocity))}",
+        f"Planet2 Velocity: {int(np.linalg.norm(planet2.velocity))}",              
         f"Moon Velocity: {int(np.linalg.norm(moon.velocity))}",
         "Space: Pause/Resume",
         "R: Reset",
