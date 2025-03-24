@@ -42,6 +42,9 @@ BLUE = (0, 100, 255)
 GRAY = (180, 180, 180)
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
+BROWN = (139, 69, 19)  # Brown for asteroids
+ORANGE = (255, 165, 0)  # Orange for new planets
+WHITE_BROWN = (200, 200, 200)  # White-brown for gas giant
 # Prediction path colors (lighter versions of body colors)
 YELLOW_PRED = (255, 255, 128)
 BLUE_PRED = (128, 170, 255)
@@ -81,6 +84,8 @@ class Body:
             self.generate_sandy_texture()
         elif color == GRAY:
             self.generate_moon_texture()
+        elif color == WHITE_BROWN:
+            self.generate_gas_giant_texture()
         
     def generate_blue_texture(self):
         # Create a surface for the texture
@@ -214,6 +219,89 @@ class Body:
                     
                     self.texture.set_at((x, y), (gray_value, gray_value, gray_value))
         
+    def generate_black_orange_texture(self):
+        # Create a surface for the texture
+        texture_size = self.radius * 2
+        self.texture = pygame.Surface((texture_size, texture_size), pygame.SRCALPHA)
+        
+        # Generate noise pattern with black and orange colors
+        for x in range(texture_size):
+            for y in range(texture_size):
+                # Calculate distance from center
+                dx = x - self.radius
+                dy = y - self.radius
+                distance = math.sqrt(dx**2 + dy**2)
+                
+                # Only draw within the radius
+                if distance <= self.radius:
+                    # Generate random noise value between 0 and 1
+                    noise = random.random()
+                    
+                    # Create black and orange pattern
+                    if noise < 0.5:  # 50% chance of black
+                        color = (
+                            int(30 * noise),  # Near black
+                            int(20 * noise),
+                            int(20 * noise)
+                        )
+                    else:  # 50% chance of orange
+                        color = (
+                            200 + int(noise * 55),  # 200-255 (red component)
+                            100 + int(noise * 65),  # 100-165 (green component)
+                            int(noise * 30)          # 0-30 (blue component - small)
+                        )
+                        
+                    # Add more texture with noise patterns
+                    if random.random() < 0.1:  # 10% chance of bright specks
+                        color = (min(255, color[0] + 50), min(255, color[1] + 30), color[2])
+                        
+                    self.texture.set_at((x, y), color)
+                    
+    def generate_gas_giant_texture(self):
+        # Create a surface for the texture
+        texture_size = self.radius * 2
+        self.texture = pygame.Surface((texture_size, texture_size), pygame.SRCALPHA)
+        
+        # Create swirling patterns for the gas giant
+        for x in range(texture_size):
+            for y in range(texture_size):
+                # Calculate distance from center
+                dx = x - self.radius
+                dy = y - self.radius
+                distance = math.sqrt(dx**2 + dy**2)
+                
+                # Only draw within the radius
+                if distance <= self.radius:
+                    # Calculate angle for swirling effect
+                    angle = math.atan2(dy, dx)
+                    
+                    # Create swirling pattern
+                    swirl_factor = math.sin(angle * 4 + distance * 0.1) * 0.5 + 0.5
+                    
+                    # Base white and brown color with swirls
+                    if swirl_factor < 0.5:  # White regions
+                        red = 200 + int(swirl_factor * 55)  # 200-255
+                        green = 200 + int(swirl_factor * 55)  # 200-255
+                        blue = 200 + int(swirl_factor * 55)  # 200-255
+                    else:  # Brown regions
+                        red = 139 + int(swirl_factor * 116)  # 139-255
+                        green = 69 + int(swirl_factor * 186)  # 69-255
+                        blue = 19 + int(swirl_factor * 236)  # 19-255
+                    
+                    # Add some darker bands
+                    if math.sin(angle * 3 + distance * 0.05) < 0:
+                        red = int(red * 0.7)
+                        green = int(green * 0.7)
+                        blue = int(blue * 0.7)
+                    
+                    # Add some bright spots
+                    if random.random() < 0.05:  # 5% chance of bright spots
+                        red = min(255, red + 50)
+                        green = min(255, green + 50)
+                        blue = min(255, blue + 50)
+                    
+                    self.texture.set_at((x, y), (red, green, blue))
+
     def update_position(self, dt):
         if not self.being_dragged:
             self.position += self.velocity * dt
@@ -281,6 +369,35 @@ class Body:
             acceleration = force / self.mass
             self.velocity += acceleration * dt
 
+# Asteroid class - simpler than full Body class
+class Asteroid:
+    def __init__(self, position, velocity, color=BROWN, radius=1):
+        self.mass = 0.1  # Very small mass
+        self.position = np.array(position, dtype=float)
+        self.velocity = np.array(velocity, dtype=float)
+        self.color = color
+        self.radius = radius
+        self.trail = []
+        self.max_trail_length = 20  # Shorter trails for asteroids
+        self.locked = False
+        self.being_dragged = False
+        # No prediction paths for asteroids
+        
+    def update_position(self, dt):
+        if not self.being_dragged:
+            self.position += self.velocity * dt
+            
+        # Update trail (shorter than planets)
+        self.trail.append((int(self.position[0]), int(self.position[1])))
+        if len(self.trail) > self.max_trail_length:
+            self.trail.pop(0)
+    
+    def apply_force(self, force, dt):
+        if not self.being_dragged:
+            # F = ma -> a = F/m
+            acceleration = force / self.mass
+            self.velocity += acceleration * dt
+
 def calculate_gravity(body1, body2):
     # Vector from body1 to body2
     r_vector = body2.position - body1.position
@@ -307,7 +424,8 @@ def reset_simulation():
     # Planet-star distance - increased for better realism
     planet_star_distance = 500  # Increased from 350
     planet2_star_distance = 250  # Increased from 150
-
+    gas_giant_distance = 3000  # Increased from 2000 to be much farther from sun
+    
     # Moon-planet distance - made smaller to strengthen planet's gravity on moon
     moon_planet_distance = 30   # was 40
     
@@ -337,6 +455,12 @@ def reset_simulation():
     planet2.trail = []
     planet2.generate_sandy_texture()
     
+    # Reset gas giant
+    gas_giant.position = np.array([width/2 + gas_giant_distance, height/2], dtype=float)
+    gas_giant.velocity = np.array([0, math.sqrt(G * star.mass / gas_giant_distance)], dtype=float)
+    gas_giant.trail = []
+    gas_giant.generate_gas_giant_texture()
+    
     # Reset moon - positioned closer to planet
     # Position the moon relative to the planet
     moon.position = np.array([width/2 + planet_star_distance + moon_planet_distance, height/2], dtype=float)
@@ -350,6 +474,52 @@ def reset_simulation():
     moon.velocity = np.array([0, moon_velocity_magnitude], dtype=float) + planet.velocity
     moon.trail = []
     moon.generate_moon_texture()
+
+    # Reset bodies list to only include the original bodies
+    global bodies
+    bodies = [star, planet, planet2, moon, gas_giant]
+
+    # Reset asteroids with the correct belt position
+    asteroid_belt_inner_radius = 1600  # Increased from 1200
+    asteroid_belt_outer_radius = 1800  # Increased from 1400
+    
+    # Clear existing asteroids
+    asteroids.clear()
+    
+    # Create new asteroids
+    for i in range(num_asteroids):
+        # Calculate position evenly spaced around a circle
+        angle = 2 * math.pi * i / num_asteroids
+        # Random distance between inner and outer radius
+        distance = asteroid_belt_inner_radius + random.random() * (asteroid_belt_outer_radius - asteroid_belt_inner_radius)
+        
+        # Convert to Cartesian coordinates
+        x = width/2 + distance * math.cos(angle)
+        y = height/2 + distance * math.sin(angle)
+        
+        # Calculate orbital velocity for a stable orbit
+        orbit_speed = math.sqrt(G * star.mass / distance) * (0.95 + random.random() * 0.1)  # Slight variation
+        
+        # Calculate velocity components (perpendicular to radius)
+        vx = -orbit_speed * math.sin(angle)
+        vy = orbit_speed * math.cos(angle)
+        
+        # Randomize the asteroid appearance slightly
+        asteroid_radius = 1
+        asteroid_color = (
+            BROWN[0] + random.randint(-20, 20),
+            BROWN[1] + random.randint(-10, 10),
+            BROWN[2] + random.randint(-10, 10)
+        )
+        
+        # Create asteroid and add to list
+        asteroid = Asteroid(
+            position=[x, y],
+            velocity=[vx, vy],
+            color=asteroid_color,
+            radius=asteroid_radius
+        )
+        asteroids.append(asteroid)
 
 # Slider class for UI control
 class Slider:
@@ -501,6 +671,7 @@ star = Body(
 # Planet-star distance - increased for better realism
 planet_star_distance = 500  # Increased from 350
 planet2_star_distance = 250  # Increased from 150
+gas_giant_distance = 3000  # Increased from 2000 to be much farther from sun
 # Moon-planet distance - made smaller to strengthen planet's gravity on moon
 moon_planet_distance = 30   # was 40
 
@@ -524,6 +695,16 @@ planet2 = Body(
     radius=4  # Updated from 6 to 4
 )
 
+# Gas Giant
+gas_giant = Body(
+    mass=300,  # Reduced from 500 to 300
+    position=[width/2 + gas_giant_distance, height/2],  # Increased from 2000 to 3000
+    # Initial velocity for a stable orbit
+    velocity=[0, math.sqrt(G * star.mass / 3000)],  # Updated for new distance
+    color=WHITE_BROWN,
+    radius=20  # Larger radius for gas giant
+)
+
 # Small orbiting body (like a moon)
 moon = Body(
     mass=1,
@@ -534,7 +715,47 @@ moon = Body(
     radius=2  # Updated from 3 to 2
 )
 
-bodies = [star, planet, planet2, moon]
+bodies = [star, planet, planet2, moon, gas_giant]
+
+# Create 150 asteroids evenly distributed around the sun
+asteroids = []
+num_asteroids = 150
+asteroid_belt_inner_radius = 1600  # Increased from 1200
+asteroid_belt_outer_radius = 1800  # Increased from 1400
+
+for i in range(num_asteroids):
+    # Calculate position evenly spaced around a circle
+    angle = 2 * math.pi * i / num_asteroids
+    # Random distance between inner and outer radius
+    distance = asteroid_belt_inner_radius + random.random() * (asteroid_belt_outer_radius - asteroid_belt_inner_radius)
+    
+    # Convert to Cartesian coordinates
+    x = width/2 + distance * math.cos(angle)
+    y = height/2 + distance * math.sin(angle)
+    
+    # Calculate orbital velocity for a stable orbit
+    orbit_speed = math.sqrt(G * star.mass / distance) * (0.95 + random.random() * 0.1)  # Slight variation
+    
+    # Calculate velocity components (perpendicular to radius)
+    vx = -orbit_speed * math.sin(angle)
+    vy = orbit_speed * math.cos(angle)
+    
+    # Randomize the asteroid appearance slightly
+    asteroid_radius = 1
+    asteroid_color = (
+        BROWN[0] + random.randint(-20, 20),
+        BROWN[1] + random.randint(-10, 10),
+        BROWN[2] + random.randint(-10, 10)
+    )
+    
+    # Create asteroid and add to list
+    asteroid = Asteroid(
+        position=[x, y],
+        velocity=[vx, vy],
+        color=asteroid_color,
+        radius=asteroid_radius
+    )
+    asteroids.append(asteroid)
 
 # Set initial moon velocity
 # Calculate orbital velocity for the moon around the planet
@@ -608,6 +829,149 @@ camera_zoom = 1.0
 camera_dragging = False
 camera_drag_start = None
 camera_tracking = None  # Which body the camera is tracking
+
+def check_asteroid_collisions():
+    # Check all pairs of asteroids for collisions
+    global asteroids, bodies
+    
+    # Keep track of collided asteroids to remove them
+    asteroids_to_remove = set()
+    new_planets = []
+    
+    # Check each pair of asteroids
+    for i in range(len(asteroids)):
+        if i in asteroids_to_remove:
+            continue
+            
+        for j in range(i + 1, len(asteroids)):
+            if j in asteroids_to_remove:
+                continue
+                
+            asteroid1 = asteroids[i]
+            asteroid2 = asteroids[j]
+            
+            # Calculate distance between asteroids
+            distance = np.linalg.norm(asteroid1.position - asteroid2.position)
+            
+            # If asteroids are close enough, consider it a collision
+            if distance < (asteroid1.radius + asteroid2.radius) * 2:
+                # Mark these asteroids for removal
+                asteroids_to_remove.add(i)
+                asteroids_to_remove.add(j)
+                
+                # Create a new planet at the collision location
+                new_planet_position = (asteroid1.position + asteroid2.position) / 2
+                
+                # New planet has combined mass and momentum
+                new_mass = asteroid1.mass + asteroid2.mass + 5  # Extra mass for growth
+                
+                # Calculate distance from sun
+                distance_from_sun = np.linalg.norm(new_planet_position - star.position)
+                
+                # Calculate orbital velocity for a stable orbit around the sun
+                # This gives us the base orbital velocity
+                orbital_speed = math.sqrt(G * star.mass / distance_from_sun)
+                
+                # Calculate direction vector from sun to planet
+                direction_to_sun = star.position - new_planet_position
+                direction_to_sun = direction_to_sun / np.linalg.norm(direction_to_sun)
+                
+                # Calculate perpendicular vector for orbital motion
+                # This gives us the direction of orbital velocity (counterclockwise)
+                orbital_direction = np.array([direction_to_sun[1], -direction_to_sun[0]])
+                
+                # Set the orbital velocity
+                new_velocity = orbital_direction * orbital_speed
+                
+                # Create new planet with black and orange texture
+                # Size is proportional to mass but with a minimum
+                new_radius = max(3, int(math.sqrt(new_mass) * 1.5))
+                
+                new_planet = Body(
+                    mass=new_mass,
+                    position=new_planet_position,
+                    velocity=new_velocity,
+                    color=ORANGE,  # Base color is orange
+                    radius=new_radius
+                )
+                
+                # Generate special texture for the new planet
+                new_planet.generate_black_orange_texture()
+                
+                # Add to list of new planets
+                new_planets.append(new_planet)
+                
+                # Only process one collision per asteroid in a single frame to avoid issues
+                break
+    
+    # Remove collided asteroids
+    if asteroids_to_remove:
+        # Convert to list and sort in reverse order
+        indices_to_remove = sorted(list(asteroids_to_remove), reverse=True)
+        
+        # Remove the asteroids
+        for idx in indices_to_remove:
+            asteroids.pop(idx)
+        
+        # Add new planets
+        for planet in new_planets:
+            bodies.append(planet)
+            
+        print(f"Collision detected! Created {len(new_planets)} new planet(s). Total bodies: {len(bodies)}")
+    
+    # Now check for collisions between asteroids and asteroid-made planets
+    # and between asteroid-made planets themselves
+    asteroid_planets = [body for body in bodies if body.color == ORANGE]  # Get all asteroid-made planets
+    
+    # Check asteroid collisions with asteroid-made planets and gas giant
+    for i, asteroid in enumerate(asteroids):
+        for body in asteroid_planets + [gas_giant]:
+            distance = np.linalg.norm(asteroid.position - body.position)
+            if distance < (asteroid.radius + body.radius) * 2:
+                if body == gas_giant:
+                    # Gas giant absorbs asteroid but doesn't grow
+                    asteroids.pop(i)
+                    print(f"Asteroid absorbed by gas giant!")
+                else:
+                    # Grow the planet
+                    body.radius += 1
+                    body.mass += asteroid.mass + 1  # Add asteroid mass plus a bit extra
+                    # Regenerate texture with new size
+                    body.generate_black_orange_texture()
+                    
+                    # Remove the asteroid
+                    asteroids.pop(i)
+                    print(f"Asteroid absorbed by planet! Planet size: {body.radius}")
+                break
+    
+    # Check collisions between asteroid-made planets and gas giant
+    for i, planet in enumerate(asteroid_planets):
+        distance = np.linalg.norm(planet.position - gas_giant.position)
+        if distance < (planet.radius + gas_giant.radius) * 2:
+            # Gas giant absorbs the planet
+            bodies.remove(planet)
+            print(f"Planet absorbed by gas giant!")
+            break
+    
+    # Check collisions between asteroid-made planets
+    for i, planet1 in enumerate(asteroid_planets):
+        for j, planet2 in enumerate(asteroid_planets[i+1:], i+1):
+            distance = np.linalg.norm(planet1.position - planet2.position)
+            if distance < (planet1.radius + planet2.radius) * 2:
+                # Grow the larger planet and remove the smaller one
+                if planet1.radius >= planet2.radius:
+                    planet1.radius += 1
+                    planet1.mass += planet2.mass + 1
+                    planet1.generate_black_orange_texture()
+                    bodies.remove(planet2)
+                    print(f"Planet merged! Larger planet size: {planet1.radius}")
+                else:
+                    planet2.radius += 1
+                    planet2.mass += planet1.mass + 1
+                    planet2.generate_black_orange_texture()
+                    bodies.remove(planet1)
+                    print(f"Planet merged! Larger planet size: {planet2.radius}")
+                break
 
 while running:
     # Handle camera tracking if enabled
@@ -726,6 +1090,10 @@ while running:
                 elif event.key == pygame.K_5:
                     # Free camera (no tracking)
                     camera_tracking = None
+                    
+                elif event.key == pygame.K_6:
+                    # Track gas giant
+                    camera_tracking = gas_giant
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 # Right mouse button for camera panning
@@ -832,6 +1200,8 @@ while running:
         
         # For more accurate simulation, we calculate forces first then apply them
         forces = {}
+        
+        # Calculate forces for main bodies
         for i, body1 in enumerate(bodies):
             net_force = np.zeros(2, dtype=float)
             for j, body2 in enumerate(bodies):
@@ -840,12 +1210,31 @@ while running:
                     net_force += force
             forces[body1] = net_force
         
-        # Apply forces and update positions
+        # Calculate forces for asteroids (affected by planets but not by each other)
+        for asteroid in asteroids:
+            net_force = np.zeros(2, dtype=float)
+            # Calculate gravity from main bodies to asteroid
+            for body in bodies:
+                force = calculate_gravity(asteroid, body)
+                net_force += force
+            forces[asteroid] = net_force
+        
+        # Apply forces and update positions for main bodies
         for body in bodies:
             if not body.locked:  # Skip physics updates for locked bodies
                 if body in forces:
                     body.apply_force(forces[body], effective_dt)
                 body.update_position(effective_dt)
+        
+        # Apply forces and update positions for asteroids
+        for asteroid in asteroids:
+            if not asteroid.locked:
+                if asteroid in forces:
+                    asteroid.apply_force(forces[asteroid], effective_dt)
+                asteroid.update_position(effective_dt)
+        
+        # Check for asteroid collisions
+        check_asteroid_collisions()
         
         # Calculate prediction paths periodically, not every frame
         prediction_update_counter += 1
@@ -872,7 +1261,36 @@ while running:
     # Clear screen
     screen.fill(BLACK)
     
-    # Draw all bodies first to ensure they're always visible
+    # Draw all asteroids first (so they appear behind planets)
+    for asteroid in asteroids:
+        # Calculate position adjusted for camera and zoom
+        screen_pos = world_to_screen(asteroid.position, camera_offset, camera_zoom)
+        
+        # Scale the radius by zoom
+        screen_radius = max(1, int(asteroid.radius * camera_zoom))
+        
+        # Always draw the asteroid, regardless of position
+        pygame.draw.circle(screen, asteroid.color, screen_pos, screen_radius)
+        
+        # Draw asteroid trails
+        if len(asteroid.trail) > 1:
+            # Simple trail drawing for asteroids to save performance
+            points = []
+            for point in asteroid.trail:
+                screen_point = world_to_screen(point, camera_offset, camera_zoom)
+                points.append(screen_point)
+            
+            # Draw a simple line instead of fancy trail
+            if len(points) > 1:
+                # Use a faded color for the trail
+                trail_color = (
+                    asteroid.color[0] // 2,
+                    asteroid.color[1] // 2,
+                    asteroid.color[2] // 2
+                )
+                pygame.draw.lines(screen, trail_color, False, points, 1)
+    
+    # Draw all bodies
     for body in bodies:
         # Calculate position adjusted for camera and zoom
         screen_pos = world_to_screen(body.position, camera_offset, camera_zoom)
@@ -967,7 +1385,7 @@ while running:
             vel_text = font.render(f"v={int(vel_magnitude)}", True, WHITE)
             screen.blit(vel_text, (arrow_end_screen[0] + 5, arrow_end_screen[1] + 5))
     
-    # Draw trails and prediction paths
+    # Draw trails and prediction paths for main bodies
     for body in bodies:
         # Draw trail with camera offset and zoom with pixelated style
         if len(body.trail) > 1:
@@ -1279,7 +1697,9 @@ while running:
     
     # Display info
     info_text = [
-        f"Bodies: {len(bodies)}",
+        f"Bodies: {len(bodies) + len(asteroids)}",
+        f"Main Bodies: {len(bodies)}",
+        f"Asteroids: {len(asteroids)}",
         f"Star Mass: {star.mass}",
         f"Planet Mass: {planet.mass}",
         f"Planet2 Mass: {planet2.mass}",
@@ -1300,6 +1720,7 @@ while running:
         "K: Lock/unlock selected body",
         "1-4: Focus camera on bodies",
         "5: Free camera",
+        "6: Track gas giant",
         "Click & Drag: Move bodies",
         "Right-click & Drag: Pan camera",
         "Scroll wheel: Zoom in/out",
@@ -1326,6 +1747,8 @@ while running:
             tracking_text = font.render("Tracking: Sandy Planet", True, GREEN)
         elif camera_tracking == moon:
             tracking_text = font.render("Tracking: Moon", True, GRAY)
+        elif camera_tracking == gas_giant:
+            tracking_text = font.render("Tracking: Gas Giant", True, WHITE_BROWN)
         screen.blit(tracking_text, (width - 200, 20))
     
     # Draw sliders
