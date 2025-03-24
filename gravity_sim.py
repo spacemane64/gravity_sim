@@ -255,15 +255,19 @@ class Body:
                 # Calculate perpendicular vectors
                 perpendicular = np.array([-direction[1], direction[0]])
                 
-                # Calculate arrowhead points
-                point1 = arrow_end - direction * head_size + perpendicular * head_size/2
-                point2 = arrow_end - direction * head_size - perpendicular * head_size/2
+                # Calculate arrowhead points in world space
+                point1 = arrow_end - direction * head_size/scale + perpendicular * head_size/(2*scale)
+                point2 = arrow_end - direction * head_size/scale - perpendicular * head_size/(2*scale)
+                
+                # Convert to screen space
+                point1_screen = world_to_screen(point1, camera_offset, camera_zoom)
+                point2_screen = world_to_screen(point2, camera_offset, camera_zoom)
                 
                 # Draw arrowhead
                 pygame.draw.polygon(surface, WHITE, [
                     (int(arrow_end[0]), int(arrow_end[1])),
-                    (int(point1[0]), int(point1[1])),
-                    (int(point2[0]), int(point2[1]))
+                    (int(point1_screen[0]), int(point1_screen[1])),
+                    (int(point2_screen[0]), int(point2_screen[1]))
                 ])
             
             # Draw velocity magnitude text
@@ -429,6 +433,8 @@ def calculate_prediction_paths(bodies, selected_body, prediction_steps, interval
             color=body.color,
             radius=body.radius
         )
+        # Copy the locked status from original body
+        temp_body.locked = body.locked
         temp_bodies.append(temp_body)
     
     # Initialize paths
@@ -462,12 +468,14 @@ def calculate_prediction_paths(bodies, selected_body, prediction_steps, interval
         
         # Apply forces and update positions
         for i, body in enumerate(temp_bodies):
-            if body in forces:
-                # Apply force
-                acceleration = forces[body] / body.mass
-                body.velocity += acceleration * dt
-            # Update position
-            body.position += body.velocity * dt
+            # Skip position and velocity updates for locked bodies
+            if not body.locked:
+                if body in forces:
+                    # Apply force
+                    acceleration = forces[body] / body.mass
+                    body.velocity += acceleration * dt
+                # Update position
+                body.position += body.velocity * dt
             
             # Record position at specified intervals
             if step % record_interval == 0:
@@ -940,8 +948,8 @@ while running:
                 perpendicular = np.array([-direction[1], direction[0]])
                 
                 # Calculate arrowhead points in world space
-                point1 = arrow_end - direction * head_size/camera_zoom + perpendicular * head_size/(2*camera_zoom)
-                point2 = arrow_end - direction * head_size/camera_zoom - perpendicular * head_size/(2*camera_zoom)
+                point1 = arrow_end - direction * head_size/scale + perpendicular * head_size/(2*scale)
+                point2 = arrow_end - direction * head_size/scale - perpendicular * head_size/(2*scale)
                 
                 # Convert to screen space
                 point1_screen = world_to_screen(point1, camera_offset, camera_zoom)
