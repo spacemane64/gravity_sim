@@ -62,12 +62,15 @@ class Body:
         self.velocity = np.array(velocity, dtype=float)
         self.color = color
         self.radius = radius
-        self.trail = []
+        self.trail = []  # Store previous positions
+        self.trail_max_length = 500  # Maximum number of points to store
+        self.prediction_path = []  # Store future positions
+        self.texture = None  # For texture-based bodies
+        self.velocity_edit_mode = False
+        self.locked = False  # Whether this body's position is locked
         self.max_trail_length = 100
         self.being_dragged = False
-        self.velocity_edit_mode = False
-        self.texture = None
-        self.prediction_path = []  # Store future positions
+        self.velocity_edit_start = None
         
         # Generate appropriate texture based on color
         if color == BLUE:
@@ -221,18 +224,6 @@ class Body:
             self.trail.pop(0)
     
     def draw(self, surface):
-        # Draw trail
-        if len(self.trail) > 1:
-            for i in range(1, len(self.trail)):
-                # Fade the trail from the body color to black
-                alpha = i / len(self.trail)
-                trail_color = (
-                    int(self.color[0] * alpha),
-                    int(self.color[1] * alpha),
-                    int(self.color[2] * alpha)
-                )
-                pygame.draw.line(surface, trail_color, self.trail[i-1], self.trail[i], 2)
-        
         # Draw the body
         position = (int(self.position[0]), int(self.position[1]))
         
@@ -419,35 +410,47 @@ class Slider:
         label_text = font.render(f"{self.label}: {self.value}", True, WHITE)
         surface.blit(label_text, (self.x, self.y - 20))
 
-def calculate_prediction_paths(bodies, steps=1000, interval=50):
-    """Calculate future positions of bodies for prediction path"""
-    # Create copies of bodies to avoid affecting the actual simulation
+def calculate_prediction_paths(bodies, selected_body, prediction_steps, interval=1):
+    # Store previous state to restore after simulation
+    original_positions = []
+    original_velocities = []
+    
+    for body in bodies:
+        original_positions.append(body.position.copy())
+        original_velocities.append(body.velocity.copy())
+    
+    # Create a copy of the bodies to simulate forward
     temp_bodies = []
     for body in bodies:
         temp_body = Body(
-            body.mass,
-            body.position.copy(),
-            body.velocity.copy(),
-            body.color,
-            body.radius
+            mass=body.mass,
+            position=body.position.copy(),
+            velocity=body.velocity.copy(),
+            color=body.color,
+            radius=body.radius
         )
         temp_bodies.append(temp_body)
-        # Clear existing predictions
-        body.prediction_path = []
     
-    # No need to limit steps - use the provided value directly
-    actual_steps = steps
+    # Initialize paths
+    paths = []
+    for _ in bodies:
+        paths.append([])
     
-    # For very high step counts, increase the interval automatically
-    # to maintain responsiveness
+    # Adaptive interval based on number of steps to avoid performance issues
     adaptive_interval = interval
-    if actual_steps > 2000:
-        # Scale the interval based on step count to limit total points
-        adaptive_interval = max(interval, actual_steps // 40)
+    if prediction_steps > 2000:
+        adaptive_interval = max(1, int(prediction_steps / 1000))
     
-    # Simulate future steps
-    for step in range(1, actual_steps + 1):
-        # Calculate forces
+    # Also limit the total number of points to reduce lag at high prediction steps
+    max_points = 2000
+    point_interval = max(1, int(prediction_steps / max_points))
+    
+    # Combine both intervals - we'll store positions at these intervals
+    record_interval = max(adaptive_interval, point_interval)
+    
+    # Simulate forward
+    for step in range(prediction_steps):
+        # Calculate forces first
         forces = {}
         for i, body1 in enumerate(temp_bodies):
             net_force = np.zeros(2, dtype=float)
@@ -458,17 +461,24 @@ def calculate_prediction_paths(bodies, steps=1000, interval=50):
             forces[body1] = net_force
         
         # Apply forces and update positions
-        for i, temp_body in enumerate(temp_bodies):
-            if temp_body in forces:
+        for i, body in enumerate(temp_bodies):
+            if body in forces:
                 # Apply force
-                acceleration = forces[temp_body] / temp_body.mass
-                temp_body.velocity += acceleration * dt
+                acceleration = forces[body] / body.mass
+                body.velocity += acceleration * dt
             # Update position
-            temp_body.position += temp_body.velocity * dt
+            body.position += body.velocity * dt
             
             # Record position at specified intervals
-            if step % adaptive_interval == 0:
-                bodies[i].prediction_path.append(temp_body.position.copy())
+            if step % record_interval == 0:
+                paths[i].append(body.position.copy())
+    
+    # Restore original state
+    for i, body in enumerate(bodies):
+        body.position = original_positions[i]
+        body.velocity = original_velocities[i]
+    
+    return paths
 
 # Create bodies
 # Large central body (like a star)
@@ -542,6 +552,7 @@ running = True
 show_predictions = True  # Toggle for showing prediction paths
 prediction_update_counter = 0  # Counter to update predictions periodically
 
+# Create sliders
 # Create slider for prediction steps
 prediction_steps_slider = Slider(
     x=width - 220, 
@@ -566,16 +577,29 @@ prediction_interval_slider = Slider(
     label="Steps per Dot"
 )
 
+# Create slider for time scale
+time_scale_slider = Slider(
+    x=width - 220, 
+    y=height - 120, 
+    width=200, 
+    height=20, 
+    min_val=10, 
+    max_val=500, 
+    initial_val=100,  # Default value (1.0x)
+    label="Time Scale (%)"
+)
+
+# Time control
+time_scale = 1.0  # Normal speed
+slow_time = False
+previous_show_predictions = True  # Store previous prediction state
+
 # Camera settings
 camera_offset = np.array([0, 0], dtype=float)
 camera_zoom = 1.0
 camera_dragging = False
 camera_drag_start = None
 camera_tracking = None  # Which body the camera is tracking
-
-# Time control
-time_scale = 1.0  # Normal speed
-slow_time = False
 
 while running:
     # Handle camera tracking if enabled
@@ -596,6 +620,20 @@ while running:
             slider_handled = True
         if prediction_interval_slider.handle_event(event):
             slider_handled = True
+        if time_scale_slider.handle_event(event):
+            slider_handled = True
+            # Update time scale from slider (convert percentage to multiplier)
+            time_scale = time_scale_slider.value / 100.0
+            
+            # Auto-toggle predictions off when time scale > 2.0
+            if time_scale > 2.0 and show_predictions:
+                previous_show_predictions = show_predictions
+                show_predictions = False
+            elif time_scale <= 2.0 and not show_predictions and previous_show_predictions:
+                show_predictions = True
+            
+            # Update slider label to show actual multiplier
+            time_scale_slider.label = f"Time Scale ({time_scale:.1f}x)"
             
         # Only process other events if not handled by slider
         if not slider_handled:
@@ -628,12 +666,38 @@ while running:
                     slow_time = not slow_time
                     if slow_time:
                         time_scale = 0.25  # 25% of normal speed (75% reduction)
+                        time_scale_slider.value = int(time_scale * 100)
                     else:
                         time_scale = 1.0  # Normal speed
-                        
+                        time_scale_slider.value = 100
+                    # Update slider label
+                    time_scale_slider.label = f"Time Scale ({time_scale:.1f}x)"
+                    
+                    # Auto-toggle predictions based on time scale
+                    if time_scale > 2.0 and show_predictions:
+                        previous_show_predictions = show_predictions
+                        show_predictions = False
+                    elif time_scale <= 2.0 and not show_predictions and previous_show_predictions:
+                        show_predictions = True
+                    
                 elif event.key == pygame.K_p:
                     # Toggle prediction paths
                     show_predictions = not show_predictions
+                    
+                elif event.key == pygame.K_o:
+                    # Turn off prediction paths completely
+                    show_predictions = False
+                    # Clear all existing prediction paths
+                    for body in bodies:
+                        body.prediction_path = []
+                    
+                elif event.key == pygame.K_k:
+                    # Lock/unlock selected body
+                    if selected_body:
+                        selected_body.locked = not selected_body.locked
+                        # Visual feedback (print to console)
+                        status = "locked" if selected_body.locked else "unlocked"
+                        print(f"Body {bodies.index(selected_body)} {status}")
                     
                 elif event.key == pygame.K_1:
                     # Track blue planet
@@ -770,9 +834,10 @@ while running:
         
         # Apply forces and update positions
         for body in bodies:
-            if body in forces:
-                body.apply_force(forces[body], effective_dt)
-            body.update_position(effective_dt)
+            if not body.locked:  # Skip physics updates for locked bodies
+                if body in forces:
+                    body.apply_force(forces[body], effective_dt)
+                body.update_position(effective_dt)
         
         # Calculate prediction paths periodically, not every frame
         prediction_update_counter += 1
@@ -781,99 +846,77 @@ while running:
             update_interval = 30  # Less frequent updates for high step counts
         
         # Update predictions when not dragging and counter reaches interval
+        # Also skip updates when zoomed out too far (paths would be tiny pixels anyway)
         if (show_predictions and 
             dragging_body is None and 
             not velocity_edit_mode and 
             prediction_update_counter >= update_interval):
             
-            # Use the full slider value for steps
-            calculate_prediction_paths(bodies, steps=prediction_steps_slider.value, interval=prediction_interval_slider.value)
+            # Only recalculate when needed - improves performance significantly
+            if camera_zoom > 0.3:  # Only calculate when not zoomed out too far
+                # Use the full slider value for steps
+                paths = calculate_prediction_paths(bodies, selected_body, prediction_steps_slider.value, prediction_interval_slider.value)
+                # Assign paths to bodies
+                for i, body in enumerate(bodies):
+                    body.prediction_path = paths[i]
             prediction_update_counter = 0  # Reset counter
     
     # Clear screen
     screen.fill(BLACK)
     
-    # Draw bodies with camera offset and zoom
+    # Draw all bodies first to ensure they're always visible
     for body in bodies:
-        # Draw trail with camera offset and zoom
-        if len(body.trail) > 1:
-            for i in range(1, len(body.trail)):
-                # Fade the trail from the body color to black
-                alpha = i / len(body.trail)
-                trail_color = (
-                    int(body.color[0] * alpha),
-                    int(body.color[1] * alpha),
-                    int(body.color[2] * alpha)
-                )
-                # Get trail points adjusted for camera
-                point1 = world_to_screen((body.trail[i-1][0], body.trail[i-1][1]), camera_offset, camera_zoom)
-                point2 = world_to_screen((body.trail[i][0], body.trail[i][1]), camera_offset, camera_zoom)
-                pygame.draw.line(screen, trail_color, point1, point2, 2)
-        
-        # Draw prediction path if enabled
-        if show_predictions and len(body.prediction_path) > 0:
-            # Determine the prediction path color based on body color
-            if body.color == YELLOW:
-                pred_color = YELLOW_PRED
-            elif body.color == BLUE:
-                pred_color = BLUE_PRED
-            elif body.color == GREEN:
-                pred_color = GREEN_PRED
-            elif body.color == GRAY:
-                pred_color = GRAY_PRED
-            else:
-                pred_color = WHITE
-            
-            # For better performance with high step counts, draw the path as a surface
-            if len(body.prediction_path) > 1:
-                # Convert all points to screen coordinates
-                screen_points = [world_to_screen(pos, camera_offset, camera_zoom) for pos in body.prediction_path]
-                
-                # Find boundaries for our temporary surface
-                min_x = max(0, min(point[0] for point in screen_points) - 5)
-                min_y = max(0, min(point[1] for point in screen_points) - 5)
-                max_x = min(width, max(point[0] for point in screen_points) + 5)
-                max_y = min(height, max(point[1] for point in screen_points) + 5)
-                
-                # Skip if outside screen or too small
-                if max_x - min_x <= 0 or max_y - min_y <= 0:
-                    continue
-                    
-                # Create a small surface just for the path
-                path_surface = pygame.Surface((max_x - min_x, max_y - min_y), pygame.SRCALPHA)
-                path_surface.fill((0, 0, 0, 0))  # Transparent background
-                
-                # Draw the path on the small surface
-                # Offset the points to be relative to the surface
-                for i in range(1, len(screen_points)):
-                    p1 = (screen_points[i-1][0] - min_x, screen_points[i-1][1] - min_y)
-                    p2 = (screen_points[i][0] - min_x, screen_points[i][1] - min_y)
-                    
-                    # Draw a thin line
-                    pygame.draw.line(path_surface, pred_color, p1, p2, 1)
-                
-                # Blit the path surface onto the main screen
-                screen.blit(path_surface, (min_x, min_y))
-        
         # Calculate position adjusted for camera and zoom
         screen_pos = world_to_screen(body.position, camera_offset, camera_zoom)
         
         # Scale the radius by zoom
         screen_radius = int(body.radius * camera_zoom)
         
-        # Draw the body
+        # Always draw the body, regardless of position
         if body.texture is not None:
             # Scale texture based on zoom
             scaled_size = int(body.radius * 2 * camera_zoom)
             if scaled_size < 1:  # Ensure minimum size
                 scaled_size = 1
             
-            scaled_texture = pygame.transform.scale(body.texture, (scaled_size, scaled_size))
+            # Pixelate by scaling down then back up without smoothing
+            small_size = max(4, scaled_size // 4)  # Reduce resolution
+            temp_texture = pygame.transform.scale(body.texture, (small_size, small_size))
+            scaled_texture = pygame.transform.scale(temp_texture, (scaled_size, scaled_size))
+            
+            # Ensure planets are always rendered
             screen.blit(scaled_texture, 
                       (screen_pos[0] - scaled_size//2, screen_pos[1] - scaled_size//2))
         else:
-            # Draw regular planet
-            pygame.draw.circle(screen, body.color, screen_pos, screen_radius)
+            # Draw regular planet as a pixelated square instead of a circle
+            pygame.draw.rect(screen, body.color, 
+                           (screen_pos[0] - screen_radius, 
+                            screen_pos[1] - screen_radius,
+                            screen_radius * 2, screen_radius * 2))
+        
+        # Draw a lock icon for locked bodies
+        if body.locked:
+            # Draw a simple lock shape
+            lock_size = max(8, int(screen_radius * 0.7))
+            
+            # Draw the lock body (rectangle)
+            lock_rect = pygame.Rect(
+                screen_pos[0] - lock_size//2,
+                screen_pos[1] - lock_size//2,
+                lock_size,
+                lock_size
+            )
+            pygame.draw.rect(screen, (255, 255, 255), lock_rect, max(1, int(camera_zoom)))
+            
+            # Draw the lock shackle (arch shape on top)
+            shackle_rect = pygame.Rect(
+                screen_pos[0] - lock_size//3,
+                screen_pos[1] - lock_size,
+                lock_size//1.5,
+                lock_size//2
+            )
+            pygame.draw.arc(screen, (255, 255, 255), shackle_rect, 
+                           math.pi, 2*math.pi, max(1, int(camera_zoom)))
         
         # Draw velocity arrow when in velocity edit mode
         if body.velocity_edit_mode:
@@ -884,8 +927,8 @@ while running:
             # Convert to screen space
             arrow_end_screen = world_to_screen(arrow_end, camera_offset, camera_zoom)
             
-            # Draw the line
-            pygame.draw.line(screen, WHITE, screen_pos, arrow_end_screen, 2)
+            # Draw the line with pixelated style (use thicker line)
+            pygame.draw.line(screen, WHITE, screen_pos, arrow_end_screen, max(2, int(camera_zoom)))
             
             # Draw arrowhead
             if np.linalg.norm(body.velocity) > 0:
@@ -916,6 +959,316 @@ while running:
             vel_text = font.render(f"v={int(vel_magnitude)}", True, WHITE)
             screen.blit(vel_text, (arrow_end_screen[0] + 5, arrow_end_screen[1] + 5))
     
+    # Draw trails and prediction paths
+    for body in bodies:
+        # Draw trail with camera offset and zoom with pixelated style
+        if len(body.trail) > 1:
+            # Use a set to avoid drawing the same pixel block twice
+            trail_pixels = set()
+            
+            # Adjust pixel size based on zoom level for consistent visual quality
+            base_pixel_size = 3  # Base size at zoom=1
+            pixel_size = max(1, int(base_pixel_size * min(1, 1/camera_zoom))) if camera_zoom > 0.5 else base_pixel_size
+            
+            # Make connection distance adaptive to zoom level - connect more pixels when zoomed in
+            max_connection_distance = max(4, int(8 / camera_zoom)) if camera_zoom < 1 else 4
+            
+            # Convert only visible trail points to screen coordinates
+            screen_trail_points = []
+            trail_colors = []
+            
+            # Add extra margin around screen to ensure smooth scrolling
+            margin = 300
+            visible_area = {
+                'left': -margin,
+                'right': width + margin,
+                'top': -margin,
+                'bottom': height + margin
+            }
+            
+            # Only process every few points based on zoom level to reduce workload
+            # When zoomed in far, we need fewer points as they're more spread out
+            skip_factor = max(1, int(camera_zoom)) if camera_zoom > 1 else 1
+            visible_count = 0
+            
+            for i in range(0, len(body.trail), skip_factor):
+                # Fade the trail from the body color to black
+                alpha = i / len(body.trail)
+                trail_color = (
+                    int(body.color[0] * alpha),
+                    int(body.color[1] * alpha),
+                    int(body.color[2] * alpha)
+                )
+                
+                # Get trail point adjusted for camera
+                world_point = (body.trail[i][0], body.trail[i][1])
+                screen_point = world_to_screen(world_point, camera_offset, camera_zoom)
+                
+                # Only add if within visible area (screen + margin)
+                if (visible_area['left'] <= screen_point[0] <= visible_area['right'] and
+                    visible_area['top'] <= screen_point[1] <= visible_area['bottom']):
+                    screen_trail_points.append(screen_point)
+                    trail_colors.append(trail_color)
+                    visible_count += 1
+            
+            # Skip processing if no visible points
+            if visible_count <= 1:
+                continue
+            
+            # First pass: Draw the main pixels
+            for i, point in enumerate(screen_trail_points):
+                # Convert to a grid of larger pixels
+                grid_x = point[0] // pixel_size
+                grid_y = point[1] // pixel_size
+                
+                # Skip if this grid position has already been drawn
+                grid_pos = (grid_x, grid_y)
+                if grid_pos in trail_pixels:
+                    continue
+                
+                # Add to the set of drawn pixels
+                trail_pixels.add(grid_pos)
+                
+                # Convert back to screen coordinates and draw a rectangle
+                pixel_x = grid_x * pixel_size
+                pixel_y = grid_y * pixel_size
+                
+                # Only draw if within screen bounds
+                if 0 <= pixel_x < width and 0 <= pixel_y < height:
+                    pygame.draw.rect(screen, trail_colors[i], 
+                                  (pixel_x, pixel_y, pixel_size, pixel_size))
+            
+            # Second pass: Connect pixels that are not adjacent but close
+            # This creates a more connected path while maintaining pixelated look
+            for i in range(len(screen_trail_points) - 1):
+                p1 = screen_trail_points[i]
+                p2 = screen_trail_points[i + 1]
+                c1 = trail_colors[i]
+                c2 = trail_colors[i + 1]
+                
+                # Get the grid positions
+                grid_x1 = p1[0] // pixel_size
+                grid_y1 = p1[1] // pixel_size
+                grid_x2 = p2[0] // pixel_size
+                grid_y2 = p2[1] // pixel_size
+                
+                # Check if points are not adjacent but within a reasonable distance
+                dx = abs(grid_x2 - grid_x1)
+                dy = abs(grid_y2 - grid_y1)
+                
+                # Calculate distance and determine whether to connect
+                # (Use Bresenham's line algorithm for efficiency)
+                if dx > dy:
+                    # Horizontal-ish line
+                    if grid_x1 > grid_x2:  # Swap to ensure x1 < x2
+                        grid_x1, grid_x2 = grid_x2, grid_x1
+                        grid_y1, grid_y2 = grid_y2, grid_y1
+                        c1, c2 = c2, c1
+                    
+                    slope = (grid_y2 - grid_y1) / max(1, grid_x2 - grid_x1)
+                    for x in range(grid_x1, grid_x2 + 1):
+                        y = int(grid_y1 + slope * (x - grid_x1))
+                        grid_pos = (x, y)
+                        
+                        if grid_pos not in trail_pixels:
+                            trail_pixels.add(grid_pos)
+                            
+                            # Interpolate color
+                            ratio = (x - grid_x1) / max(1, grid_x2 - grid_x1)
+                            color = (
+                                int(c1[0] * (1 - ratio) + c2[0] * ratio),
+                                int(c1[1] * (1 - ratio) + c2[1] * ratio),
+                                int(c1[2] * (1 - ratio) + c2[2] * ratio)
+                            )
+                            
+                            # Convert to screen coordinates
+                            pixel_x = x * pixel_size
+                            pixel_y = y * pixel_size
+                            
+                            # Only draw if within screen bounds
+                            if 0 <= pixel_x < width and 0 <= pixel_y < height:
+                                pygame.draw.rect(screen, color, 
+                                              (pixel_x, pixel_y, pixel_size, pixel_size))
+                else:
+                    # Vertical-ish line
+                    if grid_y1 > grid_y2:  # Swap to ensure y1 < y2
+                        grid_x1, grid_x2 = grid_x2, grid_x1
+                        grid_y1, grid_y2 = grid_y2, grid_y1
+                        c1, c2 = c2, c1
+                    
+                    slope = (grid_x2 - grid_x1) / max(1, grid_y2 - grid_y1)
+                    for y in range(grid_y1, grid_y2 + 1):
+                        x = int(grid_x1 + slope * (y - grid_y1))
+                        grid_pos = (x, y)
+                        
+                        if grid_pos not in trail_pixels:
+                            trail_pixels.add(grid_pos)
+                            
+                            # Interpolate color
+                            ratio = (y - grid_y1) / max(1, grid_y2 - grid_y1)
+                            color = (
+                                int(c1[0] * (1 - ratio) + c2[0] * ratio),
+                                int(c1[1] * (1 - ratio) + c2[1] * ratio),
+                                int(c1[2] * (1 - ratio) + c2[2] * ratio)
+                            )
+                            
+                            # Convert to screen coordinates
+                            pixel_x = x * pixel_size
+                            pixel_y = y * pixel_size
+                            
+                            # Only draw if within screen bounds
+                            if 0 <= pixel_x < width and 0 <= pixel_y < height:
+                                pygame.draw.rect(screen, color, 
+                                              (pixel_x, pixel_y, pixel_size, pixel_size))
+        
+        # Draw prediction path if enabled
+        if show_predictions and len(body.prediction_path) > 0:
+            # Determine the prediction path color based on body color
+            if body.color == YELLOW:
+                pred_color = YELLOW_PRED
+            elif body.color == BLUE:
+                pred_color = BLUE_PRED
+            elif body.color == GREEN:
+                pred_color = GREEN_PRED
+            elif body.color == GRAY:
+                pred_color = GRAY_PRED
+            else:
+                pred_color = WHITE
+            
+            # Only render if we have more than one point
+            if len(body.prediction_path) > 1:
+                # Add extra margin around screen for smooth scrolling
+                margin = 100
+                visible_area = {
+                    'left': -margin,
+                    'right': width + margin,
+                    'top': -margin,
+                    'bottom': height + margin
+                }
+                
+                # Skip factor based on zoom level and prediction path length
+                # More aggressive skipping for very long prediction paths
+                path_length = len(body.prediction_path)
+                base_skip = max(1, int(camera_zoom)) if camera_zoom > 1 else 1
+                skip_factor = base_skip * (5 if path_length > 1000 else 1)
+                
+                # Convert visible points to screen coordinates more efficiently
+                screen_points = []
+                for i in range(0, path_length, skip_factor):
+                    pos = body.prediction_path[i]
+                    screen_pos = world_to_screen(pos, camera_offset, camera_zoom)
+                    # Only add if within visible area
+                    if (visible_area['left'] <= screen_pos[0] <= visible_area['right'] and
+                        visible_area['top'] <= screen_pos[1] <= visible_area['bottom']):
+                        screen_points.append(screen_pos)
+                
+                # Skip if no visible points
+                if len(screen_points) <= 1:
+                    continue
+                
+                # Adjust pixel size based on zoom level for consistent visual quality
+                base_pixel_size = 4  # Base size at zoom=1
+                pixel_size = max(2, int(base_pixel_size * min(1, 1/camera_zoom)))
+                
+                # Use a set to avoid drawing the same pixel block twice
+                pixels_drawn = set()
+                
+                # Draw path in a simplified way - just connect consecutive points directly
+                for i in range(len(screen_points) - 1):
+                    p1 = screen_points[i]
+                    p2 = screen_points[i + 1]
+                    
+                    # Skip if points are too far apart (likely prediction jumps)
+                    dx = abs(p2[0] - p1[0])
+                    dy = abs(p2[1] - p1[1])
+                    if dx > width/2 or dy > height/2:
+                        continue
+                        
+                    # Convert to grid positions
+                    grid_x1 = p1[0] // pixel_size
+                    grid_y1 = p1[1] // pixel_size
+                    grid_x2 = p2[0] // pixel_size
+                    grid_y2 = p2[1] // pixel_size
+                    
+                    # Simple line drawing algorithm (Bresenham)
+                    if abs(grid_x2 - grid_x1) > abs(grid_y2 - grid_y1):
+                        # Horizontal-ish line
+                        if grid_x1 > grid_x2:
+                            grid_x1, grid_x2 = grid_x2, grid_x1
+                            grid_y1, grid_y2 = grid_y2, grid_y1
+                        
+                        slope = (grid_y2 - grid_y1) / max(1, grid_x2 - grid_x1)
+                        for x in range(grid_x1, grid_x2 + 1):
+                            y = int(grid_y1 + slope * (x - grid_x1))
+                            grid_pos = (x, y)
+                            
+                            if grid_pos not in pixels_drawn:
+                                pixels_drawn.add(grid_pos)
+                                
+                                # Convert to screen coordinates
+                                pixel_x = x * pixel_size
+                                pixel_y = y * pixel_size
+                                
+                                # Only draw if within screen bounds
+                                if 0 <= pixel_x < width and 0 <= pixel_y < height:
+                                    pygame.draw.rect(screen, pred_color, 
+                                                 (pixel_x, pixel_y, pixel_size, pixel_size))
+                    else:
+                        # Vertical-ish line
+                        if grid_y1 > grid_y2:
+                            grid_x1, grid_x2 = grid_x2, grid_x1
+                            grid_y1, grid_y2 = grid_y2, grid_y1
+                        
+                        slope = (grid_x2 - grid_x1) / max(1, grid_y2 - grid_y1)
+                        for y in range(grid_y1, grid_y2 + 1):
+                            x = int(grid_x1 + slope * (y - grid_y1))
+                            grid_pos = (x, y)
+                            
+                            if grid_pos not in pixels_drawn:
+                                pixels_drawn.add(grid_pos)
+                                
+                                # Convert to screen coordinates
+                                pixel_x = x * pixel_size
+                                pixel_y = y * pixel_size
+                                
+                                # Only draw if within screen bounds
+                                if 0 <= pixel_x < width and 0 <= pixel_y < height:
+                                    pygame.draw.rect(screen, pred_color, 
+                                                 (pixel_x, pixel_y, pixel_size, pixel_size))
+                
+                # Only perform gap filling at high zoom levels
+                if camera_zoom > 2.0:
+                    # Get a subset of pixels to connect at high zoom
+                    max_pixels = int(300 / camera_zoom)
+                    if len(pixels_drawn) > max_pixels:
+                        # Sample a subset of pixels
+                        pixel_list = list(pixels_drawn)
+                        sample_rate = max(1, len(pixel_list) // max_pixels)
+                        sampled_pixels = pixel_list[::sample_rate]
+                    else:
+                        sampled_pixels = list(pixels_drawn)
+                    
+                    # Fill only essential gaps in diagonal connections
+                    for x, y in sampled_pixels:
+                        # Only check immediate diagonals
+                        for nx, ny in [(x+1, y+1), (x+1, y-1), (x-1, y+1), (x-1, y-1)]:
+                            # If both adjacent pixels are in the set but diagonal isn't, add it
+                            if ((x, ny) in pixels_drawn and (nx, y) in pixels_drawn and 
+                                (nx, ny) not in pixels_drawn):
+                                
+                                pixels_drawn.add((nx, ny))
+                                pixel_x = nx * pixel_size
+                                pixel_y = ny * pixel_size
+                                
+                                # Only draw if within screen bounds
+                                if 0 <= pixel_x < width and 0 <= pixel_y < height:
+                                    pygame.draw.rect(screen, pred_color, 
+                                                 (pixel_x, pixel_y, pixel_size, pixel_size))
+                                
+                            # Break early if we've added too many pixels
+                            if len(pixels_drawn) > max_pixels * 2:
+                                break
+    
     # Display info
     info_text = [
         f"Bodies: {len(bodies)}",
@@ -935,6 +1288,8 @@ while running:
         "R: Reset",
         "L: Toggle slow motion",
         "P: Toggle prediction paths",
+        "O: Turn off predictions",
+        "K: Lock/unlock selected body",
         "1-4: Focus camera on bodies",
         "5: Free camera",
         "Click & Drag: Move bodies",
@@ -968,6 +1323,7 @@ while running:
     # Draw sliders
     prediction_steps_slider.draw(screen)
     prediction_interval_slider.draw(screen)
+    time_scale_slider.draw(screen)
     
     # Update display
     pygame.display.flip()
